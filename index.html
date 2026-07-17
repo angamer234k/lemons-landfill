@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vibecoded Mess Machine</title>
+  <style>
+    :root {
+      --hue: 290;
+      --spin: 0deg;
+      color-scheme: dark;
+      font-family: ui-rounded, system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at var(--x, 50%) var(--y, 50%), hsl(var(--hue) 90% 58% / .65), transparent 23rem),
+        conic-gradient(from var(--spin), #ff00cc, #3333ff, #00ffee, #ffee00, #ff00cc);
+      color: white;
+      transition: filter .2s;
+    }
+
+    main {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      padding: 1rem;
+      text-align: center;
+      backdrop-filter: blur(1px) saturate(160%);
+    }
+
+    .panel {
+      width: min(44rem, 92vw);
+      padding: clamp(1rem, 4vw, 3rem);
+      border: 2px solid rgb(255 255 255 / .35);
+      border-radius: 2rem;
+      background: rgb(0 0 0 / .48);
+      box-shadow: 0 1rem 5rem rgb(0 0 0 / .4), inset 0 0 3rem rgb(255 255 255 / .07);
+      transform: rotate(calc(sin(var(--wiggle, 0)) * 2deg));
+    }
+
+    h1 {
+      margin: 0 0 .75rem;
+      font-size: clamp(2.5rem, 12vw, 7rem);
+      line-height: .86;
+      letter-spacing: -.09em;
+      text-shadow: .05em .05em 0 #000, -.03em .03em 0 hotpink;
+    }
+
+    p {
+      margin: .5rem auto 1.25rem;
+      max-width: 34rem;
+      font-size: clamp(1rem, 4vw, 1.4rem);
+      opacity: .9;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 1rem 1.35rem;
+      margin: .3rem;
+      cursor: pointer;
+      color: #111;
+      background: linear-gradient(135deg, #fff, #aef, #f9f);
+      font-weight: 900;
+      box-shadow: 0 .5rem 0 #0008;
+      transform: translateY(0) rotate(var(--btn-tilt, -1deg));
+    }
+
+    button:active {
+      transform: translateY(.35rem) rotate(1deg);
+      box-shadow: 0 .15rem 0 #0008;
+    }
+
+    #chaos {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .blob {
+      position: absolute;
+      display: grid;
+      place-items: center;
+      width: var(--s);
+      aspect-ratio: 1;
+      border-radius: 38% 62% 63% 37% / 41% 44% 56% 59%;
+      background: hsl(var(--h) 100% 60% / .75);
+      color: #000;
+      font-size: calc(var(--s) / 2.6);
+      font-weight: 1000;
+      filter: blur(.2px) drop-shadow(0 0 1rem currentColor);
+      animation: floaty var(--t) linear infinite;
+      left: var(--left);
+      top: 105vh;
+    }
+
+    @keyframes floaty {
+      to {
+        translate: var(--dx) -125vh;
+        rotate: var(--r);
+      }
+    }
+
+    .ticker {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 3;
+      padding: .35rem;
+      overflow: hidden;
+      white-space: nowrap;
+      background: #000b;
+      font-family: ui-monospace, monospace;
+    }
+
+    .ticker span {
+      display: inline-block;
+      animation: crawl 18s linear infinite;
+    }
+
+    @keyframes crawl {
+      from { transform: translateX(100vw); }
+      to { transform: translateX(-100%); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <h1 id="title">VIBE<br>MESS</h1>
+      <p id="prophecy">A perfectly unreasonable single-file app, handcrafted by questionable decisions.</p>
+      <button id="summon">summon feature</button>
+      <button id="panic">panic deploy</button>
+      <button id="undo">undo nothing</button>
+    </section>
+  </main>
+  <div id="chaos"></div>
+  <div class="ticker"><span id="tickerText">booting chaos engine... aligning divs... negotiating with CSS...</span></div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const words = ['glorp', 'hypermodal', 'shiplet', 'AI-adjacent', 'crunchwrap', 'quantum todo', 'div soup', 'spicy cache', 'yak shave', 'bug bouquet'];
+    const glyphs = ['?', '!', '$', '#', '*', '~', '☉', '◍', '◆', '404'];
+    let chaos = 0;
+
+    function pick(xs) { return xs[Math.floor(Math.random() * xs.length)]; }
+
+    function repaint(e) {
+      const x = e ? (e.clientX / innerWidth) * 100 : Math.random() * 100;
+      const y = e ? (e.clientY / innerHeight) * 100 : Math.random() * 100;
+      document.documentElement.style.setProperty('--x', x + '%');
+      document.documentElement.style.setProperty('--y', y + '%');
+      document.documentElement.style.setProperty('--hue', Math.floor(Math.random() * 360));
+      document.documentElement.style.setProperty('--spin', Math.random() * 360 + 'deg');
+      document.documentElement.style.setProperty('--wiggle', chaos++);
+    }
+
+    function blob() {
+      const b = document.createElement('div');
+      const size = 24 + Math.random() * 90;
+      b.className = 'blob';
+      b.textContent = pick(glyphs);
+      b.style.setProperty('--s', size + 'px');
+      b.style.setProperty('--h', Math.random() * 360);
+      b.style.setProperty('--left', Math.random() * 100 + 'vw');
+      b.style.setProperty('--dx', (Math.random() * 50 - 25) + 'vw');
+      b.style.setProperty('--r', (Math.random() * 900 - 450) + 'deg');
+      b.style.setProperty('--t', (4 + Math.random() * 7) + 's');
+      $('chaos').appendChild(b);
+      setTimeout(() => b.remove(), 11000);
+    }
+
+    function nonsense() {
+      const phrase = `${pick(words)} ${pick(words)} ${Math.floor(Math.random() * 9999)}`;
+      $('prophecy').textContent = `New requirement detected: ${phrase}. Estimated complexity: yes.`;
+      $('tickerText').textContent = Array.from({ length: 12 }, () => pick(words)).join('  //  ');
+      $('title').style.letterSpacing = `${-(Math.random() * .14).toFixed(2)}em`;
+      document.body.style.filter = `hue-rotate(${Math.random() * 90}deg) contrast(${1 + Math.random() * .5})`;
+      for (let i = 0; i < 7; i++) setTimeout(blob, i * 80);
+      repaint();
+    }
+
+    $('summon').addEventListener('click', nonsense);
+    $('panic').addEventListener('click', () => {
+      $('title').innerHTML = 'SHIP<br>IT';
+      document.querySelectorAll('button').forEach(btn => btn.style.setProperty('--btn-tilt', (Math.random() * 18 - 9) + 'deg'));
+      for (let i = 0; i < 30; i++) setTimeout(blob, i * 25);
+      nonsense();
+    });
+    $('undo').addEventListener('click', () => {
+      $('prophecy').textContent = 'Undo complete. Nothing changed, but emotionally we are restored.';
+      repaint();
+    });
+
+    addEventListener('pointermove', repaint);
+    setInterval(blob, 450);
+    setInterval(() => Math.random() > .55 && nonsense(), 3200);
+    repaint();
+  </script>
+</body>
+</html>
