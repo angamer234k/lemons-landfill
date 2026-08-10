@@ -157,7 +157,7 @@ function getToolsForUser(isOwner) {
       },
     },
     ...extraToolDefs,
-  ],
+  ];
 
   if (!isOwner) return publicTools;
 
