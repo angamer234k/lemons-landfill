@@ -145,6 +145,26 @@ function getToolsForUser(isOwner) {
     {
       type: 'function',
       function: {
+        name: 'ascii_art',
+        description: 'Convert text into ASCII art.',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string', description: 'The text to convert to ASCII art' } },
+          required: ['text'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'random_quote',
+        description: 'Fetch a random inspirational or funny quote.',
+        parameters: { type: 'object', properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'customize_embed',
         description: 'Customize the embed title and color for the current conversation.',
         parameters: {
@@ -382,6 +402,16 @@ async function executeTool(name, args, context) {
         } catch {}
         return { ok: true, result: `Conversation terminated. Reason: ${reason}` };
       }
+      case 'ascii_art': {
+        const text = String(args.text || '').trim();
+        if (!text) return { ok: false, error: 'Text is required' };
+        const asciiArt = generateAsciiArt(text);
+        return { ok: true, result: asciiArt };
+      }
+      case 'random_quote': {
+        const quote = getRandomQuote();
+        return { ok: true, result: quote };
+      }
       case 'customize_embed': {
         const title = args.title || 'Default Title';
         const color = args.color || getGradualColor(conversationThreads?.get(aiMessage.id)?.replies || 0);
@@ -477,6 +507,34 @@ async function executeTool(name, args, context) {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+function generateAsciiArt(text) {
+  const asciiMap = {
+    A: ['  A  ', ' A A ', 'AAAAA', 'A   A', 'A   A'],
+    B: ['BBBB ', 'B   B', 'BBBB ', 'B   B', 'BBBB '],
+    C: [' CCCC', 'C    ', 'C    ', 'C    ', ' CCCC'],
+  };
+  const lines = ['', '', '', '', ''];
+  for (const char of text.toUpperCase()) {
+    if (asciiMap[char]) {
+      for (let i = 0; i < 5; i++) {
+        lines[i] += asciiMap[char][i] + '  ';
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+function getRandomQuote() {
+  const quotes = [
+    'The only way to do great work is to love what you do. - Steve Jobs',
+    'Life is what happens when you are busy making other plans. - John Lennon',
+    'Stay hungry, stay foolish. - Steve Jobs',
+    'The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt',
+    'It does not matter how slowly you go as long as you do not stop. - Confucius',
+  ];
+  return quotes[Math.floor(Math.random() * quotes.length)];
 }
 
 module.exports = {
