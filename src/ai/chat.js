@@ -12,7 +12,15 @@ const { getProviderConfig } = require('./models');
 const { getToolsForUser, executeTool } = require('./tools');
 
 async function askAI(user, rawHistory = [], options = {}) {
-  const { streamCallback, aiMessage, isOwner = false, conversationThreads, client, startTime } = options;
+  const {
+    streamCallback,
+    statusCallback,
+    aiMessage,
+    isOwner = false,
+    conversationThreads,
+    client,
+    startTime,
+  } = options;
   const prov = getProviderConfig();
   if (!prov.apiKey) return { error: `${prov.keyEnv} missing` };
   const url = `${prov.base}/chat/completions`;
@@ -23,14 +31,14 @@ async function askAI(user, rawHistory = [], options = {}) {
     systemPromptTemplate = fs.readFileSync(SYSTEM_PROMPT_FILE, 'utf8');
   } catch {
     systemPromptTemplate =
-      "You are a helpful assistant. To end your prompt, use [<end_of_llm_response>], EXACTLY like that.";
+      'You are a helpful assistant. To end your prompt, use [<end_of_llm_response>], EXACTLY like that.';
   }
 
   let systemPrompt = systemPromptTemplate
     .replace(/\{\{username\}\}/g, user.username)
     .replace(/\{\{displayName\}\}/g, user.displayName || user.globalName || user.username);
 
-  systemPrompt += `\n\nYou have access to tools (bot commands). Use them when helpful. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls.`;
+  systemPrompt += `\n\nYou have access to tools (bot commands). Use them when helpful — before answering, during reasoning, or after gathering info. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls.`;
 
   const trimmedHistory =
     rawHistory.length > MAX_HISTORY_TO_MODEL ? rawHistory.slice(-MAX_HISTORY_TO_MODEL) : rawHistory;
@@ -68,6 +76,10 @@ async function askAI(user, rawHistory = [], options = {}) {
   let toolCallCount = 0;
   let usedModel = botConfig.aiModel;
 
+  if (typeof statusCallback === 'function') {
+    await statusCallback({ type: 'thinking' }).catch(() => {});
+  }
+
   for (let round = 0; round <= MAX_TOOL_CALLS; round++) {
     let data = null;
     let modelUsed = null;
@@ -101,6 +113,10 @@ async function askAI(user, rawHistory = [], options = {}) {
 
     const msg = choice.message;
     const toolCalls = msg.tool_calls;
+
+    if (msg.content && toolCalls?.length && typeof statusCallback === 'function') {
+      await statusCallback({ type: 'partial', text: msg.content }).catch(() => {});
+    }
 
     if (!toolCalls || toolCalls.length === 0) {
       let reply = msg.content || '';
@@ -196,6 +212,10 @@ async function askAI(user, rawHistory = [], options = {}) {
         fnArgs = {};
       }
 
+      if (typeof statusCallback === 'function') {
+        await statusCallback({ type: 'tool', name: fnName, args: fnArgs }).catch(() => {});
+      }
+
       if (fnName === 'ai' || fnName === 'ask_ai') {
         messages.push({
           role: 'tool',
@@ -218,6 +238,10 @@ async function askAI(user, rawHistory = [], options = {}) {
         tool_call_id: tc.id,
         content: JSON.stringify(result),
       });
+    }
+
+    if (typeof statusCallback === 'function') {
+      await statusCallback({ type: 'thinking' }).catch(() => {});
     }
   }
 
