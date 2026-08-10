@@ -13,6 +13,29 @@ const { getUserMemory, updateUserMemory } = require('../memory');
 const { safeEditMessage, safeDeleteMessage } = require('../helpers');
 const { askAI, buildAIEmbed } = require('../ai');
 
+function formatHistoryDescription(history, opts = {}) {
+  const { excludeLastUser = false, aiLine = null, followUpLabel = null } = opts;
+  let description = '';
+  const end = excludeLastUser ? history.length - 1 : history.length;
+  for (let i = 0; i < end; i++) {
+    const msg = history[i];
+    if (msg.role === 'user') {
+      const name = msg.displayName || msg.userId || 'User';
+      const label = i === 0 ? `${name}:` : `${name} (follow-up ${Math.ceil(i / 2)}):`;
+      description += `**${label}** ${msg.content}\n\n`;
+    } else if (msg.role === 'assistant') {
+      description += `**AI:** ${msg.content}\n\n`;
+    }
+  }
+  if (followUpLabel) {
+    description += followUpLabel;
+  }
+  if (aiLine !== null) {
+    description += `**AI:** ${aiLine}`;
+  }
+  return description;
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('ai')
@@ -35,36 +58,32 @@ module.exports = {
       { role: 'user', content: prompt, userId: user.id, displayName: user.displayName || user.username },
     ];
 
-    const placeholderEmbed = new EmbedBuilder()
-      .setTitle(`${user.displayName || user.username} asked: ${prompt.slice(0, 100)}`)
-      .setDescription('⏳ Thinking…')
-      .setColor(0x5865F2)
-      .setTimestamp()
-      .setFooter({ text: `Model: ${botConfig.aiModel} • Replies: 0/${botConfig.maxReplies}` });
+    const title = `${user.displayName || user.username} asked: ${prompt.slice(0, 100)}`;
+    let baseDesc = '';
+    if (priorMemory.length > 0) baseDesc += `*_(memory from previous convos loaded)_*\n\n`;
+    baseDesc += `**${user.displayName || user.username}:** ${prompt}\n\n`;
+
+    const placeholderEmbed = buildAIEmbed({
+      title,
+      description: baseDesc + '**AI:** ⏳ Thinking…',
+      embedColor: 0x5865F2,
+      model: botConfig.aiModel,
+      replies: 0,
+      maxReplies: botConfig.maxReplies,
+    });
 
     const sent = await interaction.editReply({ embeds: [placeholderEmbed], components: [], fetchReply: true });
 
     let embedColor = 0x5865F2;
     let usedModel = botConfig.aiModel;
 
-    const streamCallback = async (partial, isFinal) => {
-      let reply = partial;
-      const colorMatch = reply.match(/\[C;#[0-9A-Fa-f]{6}\]/);
-      if (colorMatch) {
-        const hex = colorMatch[0].replace('[C;', '').replace(']', '');
-        embedColor = parseInt(hex.replace('#', ''), 16);
-        reply = reply.replace(colorMatch[0], '').trim();
-      }
-
-      let description = '';
-      if (priorMemory.length > 0) description += `*_(memory from previous convos loaded)_*\n\n`;
-      description += `**${user.displayName || user.username}:** ${prompt}\n\n**AI:** ${reply}${isFinal ? '' : ' ▌'}`;
+    const renderAiLine = async (aiLine, isFinal = false) => {
+      let description = baseDesc + `**AI:** ${aiLine}${isFinal ? '' : (aiLine.includes('⏳') || aiLine.includes('🔧') ? '' : ' ▌')}`;
       if (description.length > EMBED_SPLIT_THRESHOLD) {
         description = description.slice(0, EMBED_SPLIT_THRESHOLD - 10) + '…';
       }
-
       const embed = buildAIEmbed({
-        title: `${user.displayName || user.username} asked: ${prompt.slice(0, 100)}`,
+        title,
         description,
         embedColor,
         model: usedModel,
@@ -76,8 +95,26 @@ module.exports = {
       } catch {}
     };
 
+    const statusCallback = async (status) => {
+      if (status.type === 'thinking') await renderAiLine('⏳ Thinking…');
+      else if (status.type === 'tool') await renderAiLine(`🔧 \`${status.name}\`…`);
+      else if (status.type === 'partial') await renderAiLine(status.text || '…');
+    };
+
+    const streamCallback = async (partial, isFinal) => {
+      let reply = partial;
+      const colorMatch = reply.match(/\[C;#[0-9A-Fa-f]{6}\]/);
+      if (colorMatch) {
+        const hex = colorMatch[0].replace('[C;', '').replace(']', '');
+        embedColor = parseInt(hex.replace('#', ''), 16);
+        reply = reply.replace(colorMatch[0], '').trim();
+      }
+      await renderAiLine(reply, isFinal);
+    };
+
     const result = await askAI(user, initialHistory, {
       streamCallback,
+      statusCallback,
       aiMessage: sent,
       isOwner,
       conversationThreads: ctx.conversationThreads,
@@ -105,11 +142,7 @@ module.exports = {
       { role: 'assistant', content: reply },
     ]);
 
-    const title = `${user.displayName || user.username} asked: ${prompt.slice(0, 100)}`;
-    let description = '';
-    if (priorMemory.length > 0) description += `*_(memory from previous convos loaded)_*\n\n`;
-    description += `**${user.displayName || user.username}:** ${prompt}\n\n**AI:** ${reply}`;
-
+    let description = baseDesc + `**AI:** ${reply}`;
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`ai_reply_${interaction.id}`).setLabel('Reply').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('ai_delete').setLabel('Delete').setStyle(ButtonStyle.Secondary)
@@ -217,49 +250,20 @@ module.exports = {
 
     await interaction.deferUpdate();
     const originalMessage = interaction.message;
-    try {
-      const thinkingEmbed = buildAIEmbed({
-        title: thread.title || '💬 Conversation',
-        description: '⏳ Thinking…',
-        embedColor: thread.embedColor || 0x5865F2,
-        model: thread.model || botConfig.aiModel,
-        replies: thread.replies,
-        maxReplies: botConfig.maxReplies,
-      });
-      await safeEditMessage(originalMessage, { embeds: [thinkingEmbed] }, interaction);
-    } catch (e) {
-      console.error('Thinking embed edit failed:', e.message);
-    }
-
     let embedColor = thread.embedColor || 0x5865F2;
     let usedModel = thread.model || botConfig.aiModel;
+    const name = user.displayName || user.username;
+    const followUpHeader = `**${name} (follow-up ${thread.replies + 1}):** ${followUp}\n\n`;
 
-    const streamCallback = async (partial, isFinal) => {
-      let reply = partial;
-      const colorMatch = reply.match(/\[C;#[0-9A-Fa-f]{6}\]/);
-      if (colorMatch) {
-        const hex = colorMatch[0].replace('[C;', '').replace(']', '');
-        embedColor = parseInt(hex.replace('#', ''), 16);
-        reply = reply.replace(colorMatch[0], '').trim();
-      }
-
-      let description = '';
-      for (let i = 0; i < history.length - 1; i++) {
-        const msg = history[i];
-        if (msg.role === 'user') {
-          const name = msg.displayName || msg.userId || 'User';
-          const label = i === 0 ? `${name}:` : `${name} (follow-up ${Math.ceil(i / 2)}):`;
-          description += `**${label}** ${msg.content}\n\n`;
-        } else if (msg.role === 'assistant') {
-          description += `**AI:** ${msg.content}\n\n`;
-        }
-      }
-      const name = user.displayName || user.username;
-      description += `**${name} (follow-up ${thread.replies + 1}):** ${followUp}\n\n**AI:** ${reply}${isFinal ? '' : ' ▌'}`;
+    const renderAiLine = async (aiLine, isFinal = false) => {
+      let description = formatHistoryDescription(history, {
+        excludeLastUser: true,
+        followUpLabel: followUpHeader,
+        aiLine: aiLine + (isFinal || aiLine.includes('⏳') || aiLine.includes('🔧') ? '' : ' ▌'),
+      });
       if (description.length > EMBED_SPLIT_THRESHOLD) {
         description = description.slice(0, EMBED_SPLIT_THRESHOLD - 10) + '…';
       }
-
       const embed = buildAIEmbed({
         title: thread.title || '💬 Conversation',
         description,
@@ -273,8 +277,28 @@ module.exports = {
       } catch {}
     };
 
+    await renderAiLine('⏳ Thinking…');
+
+    const statusCallback = async (status) => {
+      if (status.type === 'thinking') await renderAiLine('⏳ Thinking…');
+      else if (status.type === 'tool') await renderAiLine(`🔧 \`${status.name}\`…`);
+      else if (status.type === 'partial') await renderAiLine(status.text || '…');
+    };
+
+    const streamCallback = async (partial, isFinal) => {
+      let reply = partial;
+      const colorMatch = reply.match(/\[C;#[0-9A-Fa-f]{6}\]/);
+      if (colorMatch) {
+        const hex = colorMatch[0].replace('[C;', '').replace(']', '');
+        embedColor = parseInt(hex.replace('#', ''), 16);
+        reply = reply.replace(colorMatch[0], '').trim();
+      }
+      await renderAiLine(reply, isFinal);
+    };
+
     const result = await askAI(user, history, {
       streamCallback,
+      statusCallback,
       aiMessage: interaction.message,
       isOwner,
       conversationThreads: ctx.conversationThreads,
@@ -306,17 +330,7 @@ module.exports = {
       { role: 'assistant', content: reply },
     ]);
 
-    let description = '';
-    for (let i = 0; i < history.length; i++) {
-      const msg = history[i];
-      if (msg.role === 'user') {
-        const name = msg.displayName || msg.userId || 'User';
-        const label = i === 0 ? `${name}:` : `${name} (follow-up ${Math.ceil(i / 2)}):`;
-        description += `**${label}** ${msg.content}\n\n`;
-      } else if (msg.role === 'assistant') {
-        description += `**AI:** ${msg.content}\n\n`;
-      }
-    }
+    let description = formatHistoryDescription(history);
     if (description.length > 4000) description = description.slice(0, 3997) + '…';
 
     const row = new ActionRowBuilder();
