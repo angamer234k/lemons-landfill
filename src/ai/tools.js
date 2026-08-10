@@ -18,6 +18,7 @@ const {
 } = require('../helpers');
 const { clearUserMemory } = require('../memory');
 const { fetchTextModels } = require('./models');
+const { extraToolDefs, executeExtraTool } = require('./extraTools');
 
 function getToolsForUser(isOwner) {
   const publicTools = [
@@ -141,6 +142,7 @@ function getToolsForUser(isOwner) {
         },
       },
     },
+    ...extraToolDefs,
   ];
 
   if (!isOwner) return publicTools;
@@ -257,6 +259,9 @@ async function executeTool(name, args, context) {
   const { user, isOwner, aiMessage, conversationThreads, client, startTime } = context;
 
   try {
+    const extra = await executeExtraTool(name, args, context);
+    if (extra !== null) return extra;
+
     switch (name) {
       case 'generate_password': {
         const length = Math.min(32, Math.max(8, args.length || 12));
