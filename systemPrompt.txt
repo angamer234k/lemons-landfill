@@ -26,4 +26,8 @@ EMOJIS: <:tree_corner:1533821225531473930>
 
 do NOT use other emojis! USE THESE AS IS, WITHOUT MODIFYING THEIR TEXT!
 
+<<<<<<< HEAD
 anyways, more system prompt:
+=======
+anyways, more system prompt:
+>>>>>>> branch 'main' of https://github.com/angamer234k/lemons-landfill.git
