@@ -142,8 +142,22 @@ function getToolsForUser(isOwner) {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'customize_embed',
+        description: 'Customize the embed title and color for the current conversation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Custom title for the embed' },
+            color: { type: 'string', description: 'Hex color code for the embed (optional)' },
+          },
+        },
+      },
+    },
     ...extraToolDefs,
-  ];
+  ],
 
   if (!isOwner) return publicTools;
 
@@ -255,6 +269,18 @@ function getSystemInfo() {
   };
 }
 
+function getGradualColor(replyCount) {
+  const colors = [
+    '#0099ff', // Blue
+    '#ff6600', // Orange
+    '#ff00ff', // Purple
+    '#00ff00', // Green
+    '#ff0000', // Red
+    '#ffff00', // Yellow
+  ];
+  return colors[replyCount % colors.length];
+}
+
 async function executeTool(name, args, context) {
   const { user, isOwner, aiMessage, conversationThreads, client, startTime } = context;
 
@@ -355,6 +381,28 @@ async function executeTool(name, args, context) {
           }
         } catch {}
         return { ok: true, result: `Conversation terminated. Reason: ${reason}` };
+      }
+      case 'customize_embed': {
+        const title = args.title || 'Default Title';
+        const color = args.color || getGradualColor(conversationThreads?.get(aiMessage.id)?.replies || 0);
+        if (!aiMessage) return { ok: false, error: 'No active conversation message to customize.' };
+        try {
+          const embeds = aiMessage.embeds;
+          if (embeds?.[0]) {
+            const newEmbed = EmbedBuilder.from(embeds[0])
+              .setTitle(title)
+              .setColor(color);
+            await safeEditMessage(aiMessage, { embeds: [newEmbed] });
+          } else {
+            const newEmbed = new EmbedBuilder()
+              .setTitle(title)
+              .setColor(color);
+            await safeEditMessage(aiMessage, { embeds: [newEmbed] });
+          }
+          return { ok: true, result: `Embed customized with title: ${title} and color: ${color}` };
+        } catch (e) {
+          return { ok: false, error: e.message };
+        }
       }
       case 'set_ai_model': {
         if (!isOwner) return { ok: false, error: 'Owner only' };
