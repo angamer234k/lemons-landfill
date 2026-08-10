@@ -165,6 +165,63 @@ function getToolsForUser(isOwner) {
     {
       type: 'function',
       function: {
+        name: 'text_encryption',
+        description: 'Encrypt or decrypt text using a simple Caesar cipher.',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The text to encrypt or decrypt' },
+            shift: { type: 'integer', description: 'The shift value for the cipher', minimum: 1, maximum: 25 },
+            action: { type: 'string', description: 'Whether to encrypt or decrypt', enum: ['encrypt', 'decrypt'] },
+          },
+          required: ['text', 'shift', 'action'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'mad_libs',
+        description: 'Create a Mad Libs-style story by filling in the blanks.',
+        parameters: {
+          type: 'object',
+          properties: {
+            noun: { type: 'string', description: 'A noun' },
+            verb: { type: 'string', description: 'A verb' },
+            adjective: { type: 'string', description: 'An adjective' },
+            adverb: { type: 'string', description: 'An adverb' },
+          },
+          required: ['noun', 'verb', 'adjective', 'adverb'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'count_words',
+        description: 'Count the words, characters, and sentences in a text.',
+        parameters: {
+          type: 'object',
+          properties: { text: { type: 'string', description: 'The text to analyze' } },
+          required: ['text'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'acronym_generator',
+        description: 'Generate an acronym from a phrase.',
+        parameters: {
+          type: 'object',
+          properties: { phrase: { type: 'string', description: 'The phrase to convert to an acronym' } },
+          required: ['phrase'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'customize_embed',
         description: 'Customize the embed title and color for the current conversation.',
         parameters: {
@@ -412,6 +469,37 @@ async function executeTool(name, args, context) {
         const quote = getRandomQuote();
         return { ok: true, result: quote };
       }
+      case 'text_encryption': {
+        const text = String(args.text || '').trim();
+        const shift = Math.min(25, Math.max(1, args.shift || 1));
+        const action = String(args.action || 'encrypt').toLowerCase();
+        if (!text) return { ok: false, error: 'Text is required' };
+        const result = caesarCipher(text, shift, action);
+        return { ok: true, result: { text: result, action } };
+      }
+      case 'mad_libs': {
+        const noun = String(args.noun || '').trim();
+        const verb = String(args.verb || '').trim();
+        const adjective = String(args.adjective || '').trim();
+        const adverb = String(args.adverb || '').trim();
+        if (!noun || !verb || !adjective || !adverb) {
+          return { ok: false, error: 'All fields (noun, verb, adjective, adverb) are required' };
+        }
+        const story = generateMadLib(noun, verb, adjective, adverb);
+        return { ok: true, result: story };
+      }
+      case 'count_words': {
+        const text = String(args.text || '').trim();
+        if (!text) return { ok: false, error: 'Text is required' };
+        const counts = countTextStats(text);
+        return { ok: true, result: counts };
+      }
+      case 'acronym_generator': {
+        const phrase = String(args.phrase || '').trim();
+        if (!phrase) return { ok: false, error: 'Phrase is required' };
+        const acronym = generateAcronym(phrase);
+        return { ok: true, result: acronym };
+      }
       case 'customize_embed': {
         const title = args.title || 'Default Title';
         const color = args.color || getGradualColor(conversationThreads?.get(aiMessage.id)?.replies || 0);
@@ -535,6 +623,47 @@ function getRandomQuote() {
     'It does not matter how slowly you go as long as you do not stop. - Confucius',
   ];
   return quotes[Math.floor(Math.random() * quotes.length)];
+}
+
+function caesarCipher(text, shift, action) {
+  const result = [];
+  for (let i = 0; i < text.length; i++) {
+    let char = text[i];
+    if (char.match(/[a-z]/i)) {
+      const code = text.charCodeAt(i);
+      const base = char === char.toLowerCase() ? 97 : 65;
+      let shifted = (code - base + (action === 'encrypt' ? shift : -shift) + 26) % 26;
+      char = String.fromCharCode(base + shifted);
+    }
+    result.push(char);
+  }
+  return result.join('');
+}
+
+function generateMadLib(noun, verb, adjective, adverb) {
+  const templates = [
+    `Once upon a time, there was a ${adjective} ${noun} who loved to ${verb} ${adverb}.`,
+    `The ${noun} ${verb}ed ${adverb} under the ${adjective} sky.`,
+    `In a world full of ${adjective} ${noun}s, one dared to ${verb} ${adverb}.`,
+  ];
+  return templates[Math.floor(Math.random() * templates.length)];
+}
+
+function countTextStats(text) {
+  const words = text.split(/\s+/).filter(word => word.length > 0);
+  const sentences = text.split(/[.!?]+/).filter(sentence => sentence.trim().length > 0);
+  return {
+    words: words.length,
+    characters: text.length,
+    sentences: sentences.length,
+  };
+}
+
+function generateAcronym(phrase) {
+  return phrase
+    .split(/\s+/)
+    .map(word => word[0].toUpperCase())
+    .join('');
 }
 
 module.exports = {
