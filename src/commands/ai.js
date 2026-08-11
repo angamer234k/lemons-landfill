@@ -280,6 +280,8 @@ module.exports = {
         model: usedModel,
         replies: thread.replies,
         maxReplies: botConfig.maxReplies,
+        customTitle: thread.customTitle,
+        customColor: thread.customColor,
       });
       try {
         await safeEditMessage(originalMessage, { embeds: [embed] }, interaction);
