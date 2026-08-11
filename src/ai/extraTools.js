@@ -1,6 +1,12 @@
+const net = require('net');
+const dns = require('dns').promises;
 const { getWeather } = require('../utils/weather');
 
 const reminders = new Map();
+
+// HTTP tool limits (only these)
+const HTTP_TIMEOUT_MS = 12_000;
+const HTTP_MAX_BODY_BYTES = 150_000; // ~150 KB — keeps model context sane
 
 const extraToolDefs = [
   {
@@ -43,6 +49,50 @@ const extraToolDefs = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'fetch_url',
+      description:
+        'Fetch a URL over HTTP(S) and return status, headers summary, and response body text (truncated). Use to read web pages, APIs, raw content, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'Full URL including https://' },
+          method: {
+            type: 'string',
+            description: 'HTTP method',
+            enum: ['GET', 'HEAD', 'POST'],
+          },
+          headers: {
+            type: 'object',
+            description: 'Optional request headers as key-value strings',
+          },
+          body: {
+            type: 'string',
+            description: 'Optional request body (for POST)',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ping_host',
+      description:
+        'Check if a host is reachable. Resolves DNS and opens a TCP connection to a port (default 80, or 443 for https-looking hosts). Returns latency in ms.',
+      parameters: {
+        type: 'object',
+        properties: {
+          host: { type: 'string', description: 'Hostname or IP, e.g. example.com or 1.1.1.1' },
+          port: { type: 'integer', description: 'TCP port (1-65535). Default 80, or 443 if host looks like https.' },
+        },
+        required: ['host'],
+      },
+    },
+  },
 ];
 
 const UA = 'Mozilla/5.0 (compatible; lemonAI-bot/1.1; +https://github.com/angamer234k/lemons-landfill)';
@@ -58,7 +108,227 @@ async function fetchWithTimeout(url, options = {}, ms = 8000) {
   }
 }
 
-/** DuckDuckGo Instant Answer API – good for entities / definitions, often empty otherwise */
+/** Read response body with a hard byte cap. */
+async function readBodyCapped(res, maxBytes = HTTP_MAX_BODY_BYTES) {
+  if (!res.body) {
+    const text = await res.text();
+    const buf = Buffer.from(text, 'utf8');
+    if (buf.length <= maxBytes) return { text, bytes: buf.length, truncated: false };
+    return {
+      text: buf.subarray(0, maxBytes).toString('utf8'),
+      bytes: maxBytes,
+      truncated: true,
+      totalHint: buf.length,
+    };
+  }
+
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let truncated = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const remaining = maxBytes - total;
+    if (remaining <= 0) {
+      truncated = true;
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      break;
+    }
+    if (value.byteLength > remaining) {
+      chunks.push(value.slice(0, remaining));
+      total += remaining;
+      truncated = true;
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+
+  const buf = Buffer.concat(chunks.map(c => Buffer.from(c)));
+  let text;
+  try {
+    text = buf.toString('utf8');
+  } catch {
+    text = buf.toString('latin1');
+  }
+
+  return { text, bytes: total, truncated };
+}
+
+function pickHeaders(headers) {
+  const interesting = [
+    'content-type',
+    'content-length',
+    'content-encoding',
+    'server',
+    'location',
+    'cache-control',
+    'last-modified',
+    'date',
+  ];
+  const out = {};
+  for (const key of interesting) {
+    const v = headers.get(key);
+    if (v) out[key] = v;
+  }
+  return out;
+}
+
+async function fetchUrl(args) {
+  let url = String(args.url || '').trim();
+  if (!url) return { ok: false, error: 'url is required' };
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+  const method = String(args.method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'POST'].includes(method)) {
+    return { ok: false, error: 'method must be GET, HEAD, or POST' };
+  }
+
+  const headers = { 'User-Agent': UA, Accept: '*/*' };
+  if (args.headers && typeof args.headers === 'object') {
+    for (const [k, v] of Object.entries(args.headers)) {
+      if (v == null) continue;
+      headers[String(k)] = String(v);
+    }
+  }
+
+  const init = { method, headers, redirect: 'follow' };
+  if (method === 'POST' && args.body != null) {
+    init.body = String(args.body);
+    if (!headers['Content-Type'] && !headers['content-type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+  }
+
+  const started = Date.now();
+  try {
+    const res = await fetchWithTimeout(url, init, HTTP_TIMEOUT_MS);
+    const elapsed_ms = Date.now() - started;
+
+    const summary = {
+      ok: true,
+      url: res.url || url,
+      status: res.status,
+      statusText: res.statusText,
+      redirected: res.redirected,
+      headers: pickHeaders(res.headers),
+      elapsed_ms,
+    };
+
+    if (method === 'HEAD') {
+      return summary;
+    }
+
+    const body = await readBodyCapped(res, HTTP_MAX_BODY_BYTES);
+    summary.body_bytes = body.bytes;
+    summary.body_truncated = body.truncated;
+    if (body.truncated) {
+      summary.note = `Body truncated to ${HTTP_MAX_BODY_BYTES} bytes.`;
+    }
+    summary.body = body.text;
+    return summary;
+  } catch (err) {
+    const elapsed_ms = Date.now() - started;
+    const msg = err?.name === 'AbortError' ? `Timed out after ${HTTP_TIMEOUT_MS}ms` : err.message;
+    return { ok: false, error: msg, elapsed_ms, url };
+  }
+}
+
+function normalizeHostPort(host, port) {
+  let h = String(host || '').trim();
+  let p = port != null ? Number(port) : NaN;
+
+  h = h.replace(/^https?:\/\//i, '');
+  h = h.split('/')[0];
+  if (h.includes(':') && !h.startsWith('[')) {
+    const parts = h.split(':');
+    if (parts.length === 2 && /^\d+$/.test(parts[1])) {
+      h = parts[0];
+      if (!Number.isFinite(p)) p = Number(parts[1]);
+    }
+  }
+
+  if (!Number.isFinite(p) || p < 1 || p > 65535) {
+    p = 80;
+    if (String(host).toLowerCase().includes('https')) p = 443;
+  }
+
+  return { host: h, port: p };
+}
+
+function tcpConnect(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const socket = net.connect({ host, port }, () => {
+      const ms = Date.now() - started;
+      socket.destroy();
+      resolve(ms);
+    });
+    socket.setTimeout(timeoutMs);
+    socket.on('timeout', () => {
+      socket.destroy();
+      reject(new Error(`TCP connect timed out after ${timeoutMs}ms`));
+    });
+    socket.on('error', err => {
+      socket.destroy();
+      reject(err);
+    });
+  });
+}
+
+async function pingHost(args) {
+  const { host, port } = normalizeHostPort(args.host, args.port);
+  if (!host) return { ok: false, error: 'host is required' };
+
+  const started = Date.now();
+  let addresses = [];
+  try {
+    const r = await dns.lookup(host, { all: true });
+    addresses = r.map(x => ({ address: x.address, family: x.family }));
+  } catch (err) {
+    return {
+      ok: false,
+      error: `DNS lookup failed: ${err.message}`,
+      host,
+      elapsed_ms: Date.now() - started,
+    };
+  }
+
+  try {
+    const latency_ms = await tcpConnect(host, port, HTTP_TIMEOUT_MS);
+    return {
+      ok: true,
+      host,
+      port,
+      addresses,
+      latency_ms,
+      elapsed_ms: Date.now() - started,
+      note: 'TCP connect success (not ICMP ping).',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err.message,
+      host,
+      port,
+      addresses,
+      elapsed_ms: Date.now() - started,
+    };
+  }
+}
+
 async function searchInstantAnswer(query) {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=lemonAI`;
   const res = await fetchWithTimeout(url, { headers: { 'User-Agent': UA } });
@@ -99,10 +369,6 @@ async function searchInstantAnswer(query) {
   return results.length ? results : null;
 }
 
-/**
- * Scrape organic results from DuckDuckGo HTML endpoint (no JS, no key).
- * This is what actually returns real web results.
- */
 async function searchOrganic(query) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   const res = await fetchWithTimeout(
@@ -120,16 +386,12 @@ async function searchOrganic(query) {
   const html = await res.text();
 
   const results = [];
-  // Each result block roughly looks like:
-  // <a class="result__a" href="...">Title</a>
-  // ... class="result__snippet">snippet</...>
   const blockRe =
     /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|td)>)/gi;
 
   let m;
   while ((m = blockRe.exec(html)) !== null && results.length < 6) {
     let href = m[1];
-    // DDG wraps external links: //duckduckgo.com/l/?uddg=ENCODED&...
     const uddg = href.match(/[?&]uddg=([^&]+)/);
     if (uddg) {
       try {
@@ -138,7 +400,6 @@ async function searchOrganic(query) {
         /* keep original */
       }
     }
-    // skip internal / ad links
     if (!href.startsWith('http') || href.includes('duckduckgo.com')) continue;
 
     const title = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
@@ -153,7 +414,6 @@ async function searchOrganic(query) {
     });
   }
 
-  // Fallback simpler parse if the combined regex missed
   if (results.length === 0) {
     const titleRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     while ((m = titleRe.exec(html)) !== null && results.length < 5) {
@@ -181,7 +441,6 @@ async function searchWeb(query) {
 
   const out = { ok: true, query: q, results: [], sources: [] };
 
-  // 1) Instant answer (fast, sparse)
   try {
     const instant = await searchInstantAnswer(q);
     if (instant && instant.length) {
@@ -192,7 +451,6 @@ async function searchWeb(query) {
     console.error('search_web instant error:', err.message);
   }
 
-  // 2) Organic results (the real search)
   try {
     const organic = await searchOrganic(q);
     if (organic.length) {
@@ -208,7 +466,6 @@ async function searchWeb(query) {
       'No results returned. The query may be too vague, blocked, or the search providers are temporarily unavailable. Try rephrasing.';
   }
 
-  // Keep payload small for the model
   if (out.results.length > 8) out.results = out.results.slice(0, 8);
 
   return out;
@@ -273,6 +530,14 @@ async function executeExtraTool(name, args, context) {
       console.error('search_web fatal:', err.message);
       return { ok: false, error: `Search failed: ${err.message}` };
     }
+  }
+
+  if (name === 'fetch_url') {
+    return await fetchUrl(args || {});
+  }
+
+  if (name === 'ping_host') {
+    return await pingHost(args || {});
   }
 
   return null;
