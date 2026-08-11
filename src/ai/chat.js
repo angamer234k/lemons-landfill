@@ -60,7 +60,7 @@ async function askAI(user, rawHistory = [], options = {}) {
     .replace(/\{\{username\}\}/g, user.username)
     .replace(/\{\{displayName\}\}/g, user.displayName || user.globalName || user.username);
 
-  systemPrompt += `\n\nYou have access to tools (bot commands). Use them when helpful — before answering, during reasoning, or after gathering info. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls.`;
+  systemPrompt += `\n\nYou have access to tools (bot commands). Use them when helpful — before answering, during reasoning, or after gathering info. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls. If the user asks you to use a tool, use them. If they need you to do so in a row / multiple times, do so. Do not end your thinking phase abruptly, finish tool calls, think, then respond.`;
 
   const trimmedHistory =
     rawHistory.length > MAX_HISTORY_TO_MODEL ? rawHistory.slice(-MAX_HISTORY_TO_MODEL) : rawHistory;
