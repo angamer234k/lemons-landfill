@@ -517,11 +517,6 @@ async function executeTool(name, args, context) {
               .setColor(color);
             await safeEditMessage(aiMessage, { embeds: [newEmbed] });
           }
-          const thread = conversationThreads.get(aiMessage.id);
-          if (thread) {
-            thread.customTitle = title;
-            thread.customColor = color;
-          }
           return { ok: true, result: `Embed customized with title: ${title} and color: ${color}` };
         } catch (e) {
           return { ok: false, error: e.message };

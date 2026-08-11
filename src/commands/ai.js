@@ -82,7 +82,6 @@ module.exports = {
       if (description.length > EMBED_SPLIT_THRESHOLD) {
         description = description.slice(0, EMBED_SPLIT_THRESHOLD - 10) + '…';
       }
-      const thread = ctx.conversationThreads.get(sent.id);
       const embed = buildAIEmbed({
         title,
         description,
@@ -90,8 +89,6 @@ module.exports = {
         model: usedModel,
         replies: 0,
         maxReplies: botConfig.maxReplies,
-        customTitle: thread?.customTitle,
-        customColor: thread?.customColor,
       });
       try {
         await interaction.editReply({ embeds: [embed] });
@@ -156,8 +153,6 @@ module.exports = {
       const restDesc = description.slice(EMBED_SPLIT_THRESHOLD - 20);
       const mainEmbed = buildAIEmbed({
         title, description: mainDesc, embedColor, model: usedModel, replies: 0, maxReplies: botConfig.maxReplies,
-        customTitle: thread?.customTitle,
-        customColor: thread?.customColor,
       });
       await interaction.editReply({ embeds: [mainEmbed], components: [row] });
       const contEmbed = new EmbedBuilder()
@@ -169,16 +164,12 @@ module.exports = {
     } else {
       const embed = buildAIEmbed({
         title, description, embedColor, model: usedModel, replies: 0, maxReplies: botConfig.maxReplies,
-        customTitle: thread?.customTitle,
-        customColor: thread?.customColor,
       });
       await interaction.editReply({ embeds: [embed], components: [row] });
     }
 
     ctx.conversationThreads.set(sent.id, {
       user, prompt, replies: 0, history: fullHistory, embedColor, title, model: usedModel,
-      customTitle: null,
-      customColor: null,
     });
   },
 

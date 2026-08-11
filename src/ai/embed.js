@@ -1,14 +1,12 @@
 const { EmbedBuilder } = require('discord.js');
 
-function buildAIEmbed({ title, description, embedColor, model, replies, maxReplies, customTitle, customColor }) {
+function buildAIEmbed({ title, description, embedColor, model, replies, maxReplies }) {
   let desc = description;
   if (desc.length > 4090) desc = desc.slice(0, 4087) + '…';
-  const finalTitle = customTitle || title;
-  const finalColor = customColor || embedColor;
   return new EmbedBuilder()
-    .setTitle(finalTitle)
+    .setTitle(title)
     .setDescription(desc)
-    .setColor(finalColor)
+    .setColor(embedColor)
     .setTimestamp()
     .setFooter({ text: `Model: ${model} • Replies: ${replies}/${maxReplies}` });
 }
