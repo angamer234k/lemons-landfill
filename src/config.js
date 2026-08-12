@@ -10,11 +10,11 @@ const NUDGE_SECRET = process.env.NUDGE_SECRET || 'change-me';
 const MEMORY_FILE = './user_memories.json';
 const MAX_MEMORY_MESSAGES = 10;       // persistent memory kept on disk
 const MAX_HISTORY_TO_MODEL = 8;       // max messages sent to the API per request
-const EMBED_SPLIT_THRESHOLD = 3900;
+const EMBED_SPLIT_THRESHOLD = 4000;
 const MAX_TOOL_CALLS = 50;
-const STREAM_EDIT_INTERVAL_MS = 400;
-const STREAM_MIN_CHARS = 35;
-const STREAM_MIN_LENGTH = 15;
+const STREAM_EDIT_INTERVAL_MS = 800;
+const STREAM_MIN_CHARS = 85;
+const STREAM_MIN_LENGTH = 50;
 
 const botConfig = {
   maxReplies: 5,
