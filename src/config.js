@@ -2,7 +2,7 @@
 const ROBLOX_USER_ID = 10855335836;
 const ROBLOX_GAME_ID = 16855862021;
 const DISCORD_CHANNEL_ID = '1532647917368639559';
-const CHECK_INTERVAL_MS = 10 * 60 * 1000;
+const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const CUSTOM_DESCRIPTION = 'oh this is the live status for host-it';
 const SYSTEM_PROMPT_FILE = './systemPrompt.txt';
 const OWNER_ID = '1131451961942749206';

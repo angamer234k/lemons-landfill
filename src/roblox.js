@@ -9,7 +9,7 @@ const {
 } = require('./config');
 
 const HISTORY_FILE = path.join(__dirname, '..', 'uptime_history.json');
-const MAX_HISTORY_ENTRIES = 2016; // ~14 days at 10-min intervals
+const MAX_HISTORY_ENTRIES = 864; // ~3 days at 5-min intervals
 
 let statusMessage = null;
 let currentIsOnline = false;
@@ -85,10 +85,10 @@ function getUptimeStats(sinceMs = 24 * 60 * 60 * 1000) {
   }
   sessions.push(current);
 
-  // Approximate duration using check interval gaps (last entry extends to now if recent)
+  // Approximate duration: extend last session to now if recent (< ~2 check intervals)
   const now = Date.now();
   const last = sessions[sessions.length - 1];
-  if (now - last.end < 15 * 60 * 1000) {
+  if (now - last.end < 12 * 60 * 1000) {
     last.end = now;
   }
 

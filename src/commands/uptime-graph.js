@@ -5,8 +5,6 @@ const PERIODS = {
   '12h': 12 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '3d': 3 * 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '14d': 14 * 24 * 60 * 60 * 1000,
 };
 
 function formatDuration(ms) {
@@ -81,9 +79,7 @@ module.exports = {
         .addChoices(
           { name: 'Last 12 hours', value: '12h' },
           { name: 'Last 24 hours', value: '24h' },
-          { name: 'Last 3 days', value: '3d' },
-          { name: 'Last 7 days', value: '7d' },
-          { name: 'Last 14 days', value: '14d' }
+          { name: 'Last 3 days', value: '3d' }
         )
     )
     .setIntegrationTypes([0, 1])
@@ -102,7 +98,7 @@ module.exports = {
       await interaction.editReply({
         content:
           '📭 No uptime data yet.\n' +
-          'The bot needs a few presence checks (every ~10 min) before a graph can be built.',
+          'The bot needs a few presence checks (every ~5 min) before a graph can be built.',
       });
       return;
     }
@@ -154,7 +150,7 @@ module.exports = {
         }
       )
       .setFooter({
-        text: 'History recorded every ~10 min · Times in MSK',
+        text: 'History recorded every ~5 min · Times in MSK',
       })
       .setTimestamp();
 
