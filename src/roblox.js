@@ -14,6 +14,16 @@ const MAX_HISTORY_ENTRIES = 864; // ~3 days at 5-min intervals
 let statusMessage = null;
 let currentIsOnline = false;
 let history = [];
+let hostDescription = CUSTOM_DESCRIPTION;
+
+function getHostDescription() {
+  return hostDescription;
+}
+
+function setHostDescription(text) {
+  hostDescription = String(text || '').slice(0, 500);
+  return hostDescription;
+}
 
 function loadHistory() {
   try {
@@ -70,7 +80,6 @@ function getUptimeStats(sinceMs = 24 * 60 * 60 * 1000) {
   const onlineChecks = entries.filter(e => e.online).length;
   const uptimePercent = (onlineChecks / entries.length) * 100;
 
-  // Build continuous sessions from consecutive same-state checks
   const sessions = [];
   let current = { online: entries[0].online, start: entries[0].ts, end: entries[0].ts };
 
@@ -85,7 +94,6 @@ function getUptimeStats(sinceMs = 24 * 60 * 60 * 1000) {
   }
   sessions.push(current);
 
-  // Approximate duration: extend last session to now if recent (< ~2 check intervals)
   const now = Date.now();
   const last = sessions[sessions.length - 1];
   if (now - last.end < 12 * 60 * 1000) {
@@ -119,7 +127,7 @@ function buildEmbed(isOnline) {
   const title = isOnline ? 'ONLINE' : 'OFFLINE';
   return new EmbedBuilder()
     .setTitle(title)
-    .setDescription(CUSTOM_DESCRIPTION)
+    .setDescription(hostDescription)
     .setColor(color)
     .setTimestamp()
     .setFooter({ text: 'Last updated' });
@@ -169,7 +177,6 @@ async function checkPresence(client) {
   }
 }
 
-// Load history on module init
 loadHistory();
 
 module.exports = {
@@ -178,6 +185,8 @@ module.exports = {
   getHistory,
   getUptimeStats,
   loadHistory,
+  getHostDescription,
+  setHostDescription,
   get currentIsOnline() {
     return currentIsOnline;
   },
