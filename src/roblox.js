@@ -171,7 +171,7 @@ async function checkPresence(client) {
     const isOnline = presence.placeId === ROBLOX_GAME_ID;
     recordPresence(isOnline);
     await updateStatusEmbed(client, isOnline);
-    console.log(`Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
+    // console.log(`Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
   } catch (error) {
     console.error('Error checking presence:', error.message);
   }
