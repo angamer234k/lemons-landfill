@@ -1,15 +1,14 @@
 require('dotenv').config();
 const fs = require('fs');
-const os = require('os');
-const http = require('http');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
 
-const { OWNER_ID, NUDGE_SECRET, CHECK_INTERVAL_MS } = require('./src/config');
+const { CHECK_INTERVAL_MS } = require('./src/config');
 const { loadMemories } = require('./src/memory');
 const { updateStatusEmbed, checkPresence } = require('./src/roblox');
 const { fetchTextModels } = require('./src/ai');
 const { initReminders } = require('./src/reminders');
+const { startHttpServer } = require('./src/httpServer');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -23,6 +22,7 @@ const ctx = {
   client,
   conversationThreads,
   startTime,
+  commands,
 };
 
 // ---------- LOAD COMMANDS ----------
@@ -111,54 +111,7 @@ client.once('clientReady', async () => {
     .catch(() => {});
 });
 
-// ---------- NUDGE ENDPOINT ----------
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'POST' && req.url === '/nudge') {
-    let body = '';
-    req.on('data', chunk => (body += chunk));
-    req.on('end', async () => {
-      try {
-        const data = JSON.parse(body || '{}');
-        if (data.secret !== NUDGE_SECRET) {
-          res.writeHead(401);
-          res.end('nope');
-          return;
-        }
-
-        const name = data.name || 'Anonymous';
-        const message = data.message || '(empty)';
-        const time = new Date(data.timestamp || Date.now()).toLocaleString('en-GB', {
-          timeZone: 'Europe/Moscow',
-        });
-
-        const user = await client.users.fetch(OWNER_ID);
-        await user.send({
-          embeds: [
-            {
-              title: '🍋 New message from the site',
-              description: `**From:** ${name}\n**Time (MSK):** ${time}\n\n${message}`,
-              color: 0xfdff94,
-              timestamp: new Date().toISOString(),
-            },
-          ],
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        console.error('Nudge error:', err);
-        res.writeHead(500);
-        res.end('error');
-      }
-    });
-  } else {
-    res.writeHead(404);
-    res.end('not found');
-  }
-});
-
-server.listen(15612, () => {
-  console.log('Nudge server listening on :15612');
-});
+// Same port as before — nudge + status API + dashboard
+startHttpServer(ctx);
 
 client.login(process.env.DISCORD_TOKEN);

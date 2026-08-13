@@ -90,7 +90,6 @@ async function fireReminder(reminder) {
   try {
     const user = await clientRef.users.fetch(reminder.userId);
     await user.send({ content }).catch(async () => {
-      // Fallback to original channel if DMs closed
       if (reminder.channelId) {
         const channel = await clientRef.channels.fetch(reminder.channelId).catch(() => null);
         if (channel?.isTextBased?.()) {
@@ -109,7 +108,6 @@ function scheduleReminder(reminder) {
     fireReminder(reminder);
     return;
   }
-  // setTimeout max is ~24.8 days; we already cap at 7d so fine
   const timeout = setTimeout(() => fireReminder(reminder), delay);
   reminder.timeout = timeout;
 }
@@ -144,6 +142,10 @@ function getUserReminders(userId) {
     .sort((a, b) => a.dueAt - b.dueAt);
 }
 
+function getReminderCount() {
+  return reminders.size;
+}
+
 function cancelReminder(id, userId) {
   const r = reminders.get(id);
   if (!r || r.userId !== userId) return false;
@@ -166,6 +168,7 @@ module.exports = {
   formatDuration,
   addReminder,
   getUserReminders,
+  getReminderCount,
   cancelReminder,
   initReminders,
   MAX_REMINDER_MS,
