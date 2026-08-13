@@ -5,6 +5,7 @@ node_modules/
 user_memories.json
 uptime_history.json
 reminders.json
+user_timezones.json
 *.log
 .DS_Store
 npm-debug.log*
