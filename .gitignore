@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 user_memories.json
 uptime_history.json
+reminders.json
 *.log
 .DS_Store
 npm-debug.log*

@@ -9,6 +9,7 @@ const { OWNER_ID, NUDGE_SECRET, CHECK_INTERVAL_MS } = require('./src/config');
 const { loadMemories } = require('./src/memory');
 const { updateStatusEmbed, checkPresence } = require('./src/roblox');
 const { fetchTextModels } = require('./src/ai');
+const { initReminders } = require('./src/reminders');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -100,6 +101,7 @@ client.on('interactionCreate', async interaction => {
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   loadMemories();
+  initReminders(client);
   await registerCommands();
   await updateStatusEmbed(client, false);
   await checkPresence(client);
