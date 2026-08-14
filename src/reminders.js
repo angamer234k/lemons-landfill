@@ -85,7 +85,7 @@ async function fireReminder(reminder) {
 
   if (!clientRef) return;
 
-  const content = `⏰ **Reminder:** ${reminder.message}`;
+  const content = `⏰ **Reminding:** ${reminder.message}`;
 
   try {
     const user = await clientRef.users.fetch(reminder.userId);
