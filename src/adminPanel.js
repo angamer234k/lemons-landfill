@@ -12,7 +12,7 @@ const { OWNER_ID } = require('./config');
 const customCommands = require('./customCommands');
 const botPresence = require('./botPresence');
 
-const ADMIN_CHANNEL_ID = process.env.ADMIN_CHANNEL_ID || '130386002387118';
+const ADMIN_CHANNEL_ID = process.env.ADMIN_CHANNEL_ID || '1537831681812209764';
 
 function isAdminUser(userId) {
   return userId === OWNER_ID;
