@@ -11,6 +11,7 @@ const { initReminders } = require('./src/reminders');
 const { startHttpServer } = require('./src/httpServer');
 const customCommands = require('./src/customCommands');
 const botPresence = require('./src/botPresence');
+const { ADMIN_CHANNEL_ID, sendAdminPanel, handleAdminButton, handleAdminSelect, handleAdminModal } = require('./src/adminPanel');
 
 const client = new Client({
   intents: [
@@ -151,9 +152,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
-
-const adminPanel = require('./src/adminPanel');
-const { ADMIN_CHANNEL_ID, sendAdminPanel, handleAdminButton, handleAdminSelect, handleAdminModal } = adminPanel;
 
 // ---------- STARTUP ----------
 client.once('clientReady', async () => {
