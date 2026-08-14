@@ -102,7 +102,9 @@ client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   loadMemories();
   initReminders(client);
-  await registerCommands();
+  await registerCommands(); 
+  // TODO: await registerCustomCommands();
+  // TODO: await configureCommands() (access or no access to users in my server 1490922744915955882
   await updateStatusEmbed(client, false);
   await checkPresence(client);
   setInterval(() => checkPresence(client), CHECK_INTERVAL_MS);
