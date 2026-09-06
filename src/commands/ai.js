@@ -36,27 +36,58 @@ function formatHistoryDescription(history, opts = {}) {
   return description;
 }
 
-/** Live progress: spinner only. Thinking / tool names stay hidden. */
+/** Live progress log so tool steps / partial text append instead of wiping each other. */
 function createProgress() {
   return {
     startedAt: Date.now(),
     thinking: true,
+    tools: [],
+    interim: [],
   };
 }
 
+function pushUniqueLine(arr, line, max = 6) {
+  const t = String(line || '').replace(/\s+/g, ' ').trim();
+  if (!t) return;
+  if (arr[arr.length - 1] === t) return;
+  arr.push(t);
+  while (arr.length > max) arr.shift();
+}
+
 /**
- * Build the status block shown with the AI answer.
- * live=true  → generic spinner (no reasoning, no tool names)
- * live=false → the answer only
+ * Build the status block shown above the final AI answer.
+ * live=true  → spinner + tool steps (reasoning text is never shown)
+ * live=false → collapsed "Thought for X second(s)"
  */
 function formatProgressBlock(progress, { live = true, answer = null } = {}) {
-  if (!live) {
-    return answer == null ? '' : String(answer);
+  const lines = [];
+
+  if (live) {
+    lines.push('⏳ Thinking…');
+    for (const name of progress.tools) {
+      lines.push(`> ⚙️ \`${name}\``);
+    }
+    if (progress.tools.length > 0) {
+      lines.push(`> ⚙️ Used ${progress.tools.length} tool(s)`);
+    }
+    for (const t of progress.interim) {
+      for (const part of t.split('\n').slice(0, 3)) {
+        const p = part.trim();
+        if (p) lines.push(`> ${p.slice(0, 200)}`);
+      }
+    }
+  } else {
+    const secs = Math.max(1, Math.round((Date.now() - progress.startedAt) / 1000));
+    lines.push(`> ⏳ Thought for ${secs} second${secs === 1 ? '' : 's'}`);
+    if (progress.tools.length > 0) {
+      lines.push(`> ⚙️ Used ${progress.tools.length} tool(s)`);
+    }
   }
-  let block = '⏳ Thinking…';
+
+  let block = lines.join('\n');
   if (answer !== null && answer !== undefined) {
     const a = String(answer);
-    if (a) block += '\n\n' + a;
+    block += (block ? '\n\n' : '') + a;
   }
   return block;
 }
@@ -138,10 +169,18 @@ module.exports = {
     };
 
     const statusCallback = async status => {
-      if (status.type === 'thinking' || status.type === 'tool') {
+      if (status.type === 'thinking') {
         progress.thinking = true;
         await renderProgress({ live: true });
+      } else if (status.type === 'tool') {
+        progress.thinking = true;
+        if (status.name) pushUniqueLine(progress.tools, status.name, 8);
+        await renderProgress({ live: true });
+      } else if (status.type === 'partial') {
+        if (status.text) pushUniqueLine(progress.interim, status.text, 4);
+        await renderProgress({ live: true });
       }
+      // 'think' (model reasoning) is ignored on purpose
     };
 
     const streamCallback = async (partial, isFinal) => {
@@ -345,10 +384,18 @@ module.exports = {
     await renderProgress({ live: true });
 
     const statusCallback = async status => {
-      if (status.type === 'thinking' || status.type === 'tool') {
+      if (status.type === 'thinking') {
         progress.thinking = true;
         await renderProgress({ live: true });
+      } else if (status.type === 'tool') {
+        progress.thinking = true;
+        if (status.name) pushUniqueLine(progress.tools, status.name, 8);
+        await renderProgress({ live: true });
+      } else if (status.type === 'partial') {
+        if (status.text) pushUniqueLine(progress.interim, status.text, 4);
+        await renderProgress({ live: true });
       }
+      // 'think' (model reasoning) is ignored on purpose
     };
 
     const streamCallback = async (partial, isFinal) => {
