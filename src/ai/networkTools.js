@@ -146,6 +146,79 @@ const networkToolDefs = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'security_audit',
+      description:
+        'One-shot security review of a public URL/host: TLS, HTTP security headers, cookies, CORS, HTTPS, redirects, security.txt, DNS/mail auth. Returns a findings list with severity. Use when the user wants vulns/misconfig, not a full exploit.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'URL or hostname to audit, e.g. https://example.com' } },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'http_request',
+      description:
+        'Send one HTTP request with a specific method, headers, query, and body to a public URL. Use to debug an API or try particular input the user (or you) want to test. POST/PUT/PATCH/DELETE only on endpoints the user asked to test. Returns status, headers, timing, and a truncated body.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'Full URL' },
+          method: {
+            type: 'string',
+            enum: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+            description: 'HTTP method. Default GET.',
+          },
+          headers: {
+            type: 'object',
+            description: 'Optional request headers as key-value strings',
+          },
+          query: {
+            type: 'object',
+            description: 'Optional query string params (merged into the URL)',
+          },
+          body: {
+            type: 'string',
+            description: 'Optional request body (JSON or form string). Ignored for GET/HEAD.',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'api_probe',
+      description:
+        'Hit an API endpoint with a small set of unexpected-but-benign variants (OPTIONS, extra fields, malformed JSON, type confusion, missing auth, wrong Content-Type) and flag responses that differ or leak errors/stack traces. Not an exploit pack. Max a handful of requests. Never sends DELETE.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'API endpoint URL' },
+          method: {
+            type: 'string',
+            enum: ['GET', 'POST', 'PUT', 'PATCH'],
+            description: 'Baseline method. Default POST if body is set, else GET.',
+          },
+          headers: {
+            type: 'object',
+            description: 'Optional headers (Authorization, Content-Type, etc.)',
+          },
+          body: {
+            type: 'string',
+            description: 'Optional baseline JSON body as a string',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
 ];
 
 function ipv4ToInt(ip) {
@@ -801,6 +874,535 @@ function cidrInfo(args) {
   };
 }
 
+const REQ_BODY_MAX = 32_000;
+const RESP_BODY_MAX = 80_000;
+const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+
+function applyQuery(url, query) {
+  if (!query || typeof query !== 'object') return url;
+  const u = new URL(url);
+  for (const [k, v] of Object.entries(query)) {
+    if (v == null) continue;
+    u.searchParams.set(String(k), String(v));
+  }
+  return u.href;
+}
+
+function mergeHeaders(extra) {
+  const headers = { 'User-Agent': UA, Accept: '*/*' };
+  if (extra && typeof extra === 'object') {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v == null) continue;
+      const key = String(k);
+      if (/^host$/i.test(key)) continue;
+      headers[key] = String(v);
+    }
+  }
+  return headers;
+}
+
+function previewBody(text, max = 1200) {
+  const s = String(text || '');
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+function leakHints(status, text) {
+  const hints = [];
+  const t = String(text || '');
+  if (status >= 500) hints.push('server_error');
+  const checks = [
+    [/sqlstate|sqlite|postgresql|mysql error|ora-\d+|syntax error at or near/i, 'db_error'],
+    [/traceback \(most recent call last\)|stack trace|at Object\.|unhandled exception/i, 'stack_trace'],
+    [/\/var\/www|\/home\/\w+|C:\\Users\\|site-packages/i, 'path_disclosure'],
+    [/xdebug|whoops!|debugbar|django traceback|werkzeug debugger/i, 'debug_page'],
+    [/undefined index|cannot read propert|nullpointer|typeerror:/i, 'verbose_runtime'],
+  ];
+  for (const [re, tag] of checks) {
+    if (re.test(t)) hints.push(tag);
+  }
+  return hints;
+}
+
+async function publicHttpRequest({ url, method = 'GET', headers, body, query, maxHops = 5 }) {
+  let current;
+  try {
+    current = applyQuery(parseHttpUrl(url).href, query);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  method = String(method || 'GET').toUpperCase();
+  if (!HTTP_METHODS.includes(method)) {
+    return { ok: false, error: `method must be one of ${HTTP_METHODS.join(', ')}` };
+  }
+
+  let sendBody = null;
+  if (body != null && method !== 'GET' && method !== 'HEAD') {
+    sendBody = String(body);
+    if (sendBody.length > REQ_BODY_MAX) {
+      return { ok: false, error: `body too large (max ${REQ_BODY_MAX} bytes)` };
+    }
+  }
+
+  const hdrs = mergeHeaders(headers);
+  if (sendBody != null && !Object.keys(hdrs).some(k => k.toLowerCase() === 'content-type')) {
+    const trimmed = sendBody.trim();
+    hdrs['Content-Type'] =
+      trimmed.startsWith('{') || trimmed.startsWith('[') ? 'application/json' : 'text/plain';
+  }
+
+  const hops = [];
+  const started = Date.now();
+  let lastRes = null;
+  let finalUrl = current;
+
+  for (let i = 0; i < maxHops; i++) {
+    let parsed;
+    try {
+      parsed = parseHttpUrl(current);
+      await assertPublicHost(parsed.hostname);
+    } catch (err) {
+      return { ok: false, error: err.message, url: current, elapsed_ms: Date.now() - started, hops };
+    }
+
+    try {
+      const init = { method, headers: hdrs, redirect: 'manual' };
+      if (sendBody != null && i === 0) init.body = sendBody;
+      // After a redirect, GET the next hop without replaying a mutating body.
+      if (i > 0) {
+        init.method = method === 'HEAD' ? 'HEAD' : 'GET';
+        delete init.body;
+      }
+      const res = await fetchWithTimeout(parsed.href, init, HTTP_TIMEOUT_MS);
+      lastRes = res;
+      finalUrl = res.url || parsed.href;
+      const loc = res.headers.get('location');
+      hops.push({ url: parsed.href, status: res.status, location: loc || null });
+
+      if (loc && res.status >= 300 && res.status < 400) {
+        try {
+          await res.body?.cancel?.();
+        } catch {
+          /* ignore */
+        }
+        current = new URL(loc, parsed.href).href;
+        continue;
+      }
+      break;
+    } catch (err) {
+      const msg = err?.name === 'AbortError' ? `Timed out after ${HTTP_TIMEOUT_MS}ms` : err.message;
+      return { ok: false, error: msg, url: parsed.href, elapsed_ms: Date.now() - started, hops };
+    }
+  }
+
+  if (!lastRes) return { ok: false, error: 'No response', url: current, elapsed_ms: Date.now() - started };
+
+  const interesting = [
+    'content-type',
+    'content-length',
+    'server',
+    'x-powered-by',
+    'location',
+    'www-authenticate',
+    'allow',
+    'access-control-allow-origin',
+    'access-control-allow-credentials',
+    'access-control-allow-methods',
+    'set-cookie',
+    'cache-control',
+    'x-request-id',
+  ];
+  const outHeaders = {};
+  for (const key of interesting) {
+    const v = lastRes.headers.get(key);
+    if (v) outHeaders[key] = v.length > 400 ? v.slice(0, 400) + '…' : v;
+  }
+
+  let bodyText = '';
+  let truncated = false;
+  let bytes = 0;
+  if (method !== 'HEAD') {
+    const cap = await readCappedText(lastRes, RESP_BODY_MAX);
+    bodyText = cap.text;
+    truncated = cap.truncated;
+    bytes = cap.bytes;
+  } else {
+    try {
+      await lastRes.body?.cancel?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const elapsed_ms = Date.now() - started;
+  const hints = leakHints(lastRes.status, bodyText);
+  const cookies = parseCookieFlags(outHeaders['set-cookie'], lastRes.headers);
+  return {
+    ok: true,
+    url: finalUrl,
+    requested: hops[0]?.url || current,
+    method,
+    status: lastRes.status,
+    statusText: lastRes.statusText,
+    redirected: hops.length > 1,
+    hops,
+    headers: outHeaders,
+    cookies: cookies.length ? cookies : undefined,
+    elapsed_ms,
+    body_bytes: bytes,
+    body_truncated: truncated,
+    body: previewBody(bodyText, 4000),
+    leak_hints: hints.length ? hints : undefined,
+  };
+}
+
+async function readCappedText(res, maxBytes) {
+  if (!res.body) {
+    const text = await res.text();
+    const buf = Buffer.from(text, 'utf8');
+    if (buf.length <= maxBytes) return { text, bytes: buf.length, truncated: false };
+    return { text: buf.subarray(0, maxBytes).toString('utf8'), bytes: maxBytes, truncated: true };
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const remaining = maxBytes - total;
+    if (remaining <= 0) {
+      truncated = true;
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      break;
+    }
+    if (value.byteLength > remaining) {
+      chunks.push(value.slice(0, remaining));
+      total += remaining;
+      truncated = true;
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const buf = Buffer.concat(chunks.map(c => Buffer.from(c)));
+  return { text: buf.toString('utf8'), bytes: total, truncated };
+}
+
+function parseCookieFlags(setCookieHeader, headers) {
+  const raw = [];
+  if (headers && typeof headers.getSetCookie === 'function') {
+    try {
+      raw.push(...headers.getSetCookie());
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!raw.length && setCookieHeader) raw.push(setCookieHeader);
+  return raw.slice(0, 12).map(c => {
+    const parts = String(c).split(';').map(s => s.trim());
+    const name = (parts[0] || '').split('=')[0];
+    const flags = parts.slice(1).map(p => p.toLowerCase());
+    const samesite = (flags.find(f => f.startsWith('samesite=')) || '').split('=')[1] || null;
+    return {
+      name,
+      secure: flags.some(f => f === 'secure'),
+      httponly: flags.some(f => f === 'httponly'),
+      samesite,
+    };
+  });
+}
+
+async function httpRequest(args) {
+  return publicHttpRequest({
+    url: args.url,
+    method: args.method,
+    headers: args.headers,
+    body: args.body,
+    query: args.query,
+  });
+}
+
+function tryParseJson(s) {
+  try {
+    return { ok: true, value: JSON.parse(s) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function apiProbe(args) {
+  let parsed;
+  try {
+    parsed = parseHttpUrl(args.url);
+    await assertPublicHost(parsed.hostname);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  const hasBody = args.body != null && String(args.body).trim() !== '';
+  let method = String(args.method || (hasBody ? 'POST' : 'GET')).toUpperCase();
+  if (!['GET', 'POST', 'PUT', 'PATCH'].includes(method)) {
+    return { ok: false, error: 'api_probe only allows GET, POST, PUT, or PATCH (no DELETE)' };
+  }
+
+  const baseHeaders = args.headers && typeof args.headers === 'object' ? { ...args.headers } : {};
+  const baseBody = hasBody ? String(args.body) : null;
+  const probes = [];
+
+  const run = async (label, opts) => {
+    const res = await publicHttpRequest({
+      url: parsed.href,
+      method: opts.method || method,
+      headers: opts.headers != null ? opts.headers : baseHeaders,
+      body: opts.body !== undefined ? opts.body : baseBody,
+      query: opts.query,
+    });
+    const interesting =
+      !res.ok ||
+      (opts.baselineStatus != null && res.status !== opts.baselineStatus) ||
+      (res.leak_hints && res.leak_hints.length > 0);
+    probes.push({
+      label,
+      ok: res.ok,
+      status: res.status,
+      error: res.ok ? undefined : res.error,
+      elapsed_ms: res.elapsed_ms,
+      content_type: res.headers && res.headers['content-type'],
+      leak_hints: res.leak_hints,
+      body_preview: res.body ? previewBody(res.body, 600) : undefined,
+      interesting: !!interesting,
+    });
+    return res;
+  };
+
+  const baseline = await run('baseline', { method, baselineStatus: null });
+  const baseStatus = baseline.ok ? baseline.status : null;
+
+  await run('OPTIONS', { method: 'OPTIONS', body: null, headers: baseHeaders, baselineStatus: baseStatus });
+
+  const json = baseBody ? tryParseJson(baseBody) : { ok: false };
+  if (json.ok && json.value && typeof json.value === 'object' && !Array.isArray(json.value)) {
+    const extra = { ...json.value, __unexpected: true, __probe: 1 };
+    await run('extra_json_fields', {
+      method,
+      body: JSON.stringify(extra),
+      headers: baseHeaders,
+      baselineStatus: baseStatus,
+    });
+
+    const keys = Object.keys(json.value);
+    const strKey = keys.find(k => typeof json.value[k] === 'string') || keys[0];
+    if (strKey) {
+      const confused = { ...json.value, [strKey]: [json.value[strKey], { n: 1 }] };
+      await run(`type_confusion:${strKey}`, {
+        method,
+        body: JSON.stringify(confused),
+        headers: baseHeaders,
+        baselineStatus: baseStatus,
+      });
+    }
+  } else if (method === 'GET') {
+    await run('extra_query_param', {
+      method: 'GET',
+      body: null,
+      headers: baseHeaders,
+      query: { __probe: '1' },
+      baselineStatus: baseStatus,
+    });
+  }
+
+  if (method !== 'GET' && method !== 'HEAD') {
+    await run('malformed_json', {
+      method,
+      body: '{"broken":',
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      baselineStatus: baseStatus,
+    });
+    await run('wrong_content_type', {
+      method,
+      body: baseBody || '{}',
+      headers: { ...baseHeaders, 'Content-Type': 'text/plain' },
+      baselineStatus: baseStatus,
+    });
+  }
+
+  const authKey = Object.keys(baseHeaders).find(k =>
+    /^(authorization|x-api-key|api-key|cookie)$/i.test(k)
+  );
+  if (authKey) {
+    const dropped = { ...baseHeaders };
+    delete dropped[authKey];
+    await run(`missing_${authKey}`, {
+      method,
+      body: baseBody,
+      headers: dropped,
+      baselineStatus: baseStatus,
+    });
+  }
+
+  const interesting = probes.filter(p => p.interesting);
+  return {
+    ok: true,
+    url: parsed.href,
+    method,
+    probe_count: probes.length,
+    baseline_status: baseStatus,
+    probes,
+    interesting,
+    note:
+      'Benign unexpected-input checks only. Differing status, 5xx, or leak_hints (stack traces, SQL errors, path disclosure) are the useful bits. Not an exploit scan.',
+  };
+}
+
+function addFinding(findings, severity, title, detail) {
+  findings.push({ severity, title, detail });
+}
+
+async function securityAudit(args) {
+  let parsed;
+  try {
+    parsed = parseHttpUrl(args.url || args.host);
+    await assertPublicHost(parsed.hostname);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  const href = parsed.href;
+  const host = parsed.hostname;
+  const findings = [];
+
+  const [ssl, probe, mail, page, cors, secTxt] = await Promise.all([
+    parsed.protocol === 'https:' ? sslInspect({ host }) : Promise.resolve({ ok: false, skipped: true }),
+    httpProbe({ url: href }),
+    emailDns({ domain: host }).catch(() => ({ ok: false })),
+    publicHttpRequest({ url: href, method: 'GET' }),
+    publicHttpRequest({
+      url: href,
+      method: 'GET',
+      headers: { Origin: 'https://evil.example' },
+    }),
+    publicHttpRequest({
+      url: `${parsed.protocol}//${host}/.well-known/security.txt`,
+      method: 'GET',
+    }),
+  ]);
+
+  if (parsed.protocol === 'http:') {
+    addFinding(findings, 'high', 'Served over HTTP', 'No TLS on the requested URL. Credentials and cookies can be sniffed.');
+  }
+
+  if (ssl && ssl.ok) {
+    if (ssl.authorized === false) {
+      addFinding(
+        findings,
+        'high',
+        'TLS certificate not trusted',
+        ssl.authorizationError || 'Handshake succeeded but the cert did not validate.'
+      );
+    }
+    if (typeof ssl.days_until_expiry === 'number') {
+      if (ssl.days_until_expiry < 0) addFinding(findings, 'high', 'TLS certificate expired', ssl.valid_to);
+      else if (ssl.days_until_expiry <= 14) {
+        addFinding(findings, 'high', 'TLS certificate expires soon', `${ssl.days_until_expiry} days (${ssl.valid_to})`);
+      } else if (ssl.days_until_expiry <= 30) {
+        addFinding(findings, 'medium', 'TLS certificate expires within 30 days', `${ssl.days_until_expiry} days`);
+      }
+    }
+    if (ssl.protocol && /TLSv1(\.0|\.1)?$/i.test(ssl.protocol)) {
+      addFinding(findings, 'high', 'Old TLS protocol', ssl.protocol);
+    }
+  } else if (parsed.protocol === 'https:' && ssl && !ssl.skipped && !ssl.ok) {
+    addFinding(findings, 'high', 'TLS handshake failed', ssl.error || 'unknown');
+  }
+
+  if (probe && probe.ok && probe.security) {
+    for (const note of probe.security.notes || []) {
+      const sev = /strict-transport|content-security-policy/i.test(note) ? 'medium' : 'low';
+      addFinding(findings, sev, 'Missing security header', note);
+    }
+    const powered = probe.security.headers && probe.security.headers['x-powered-by'];
+    if (powered) addFinding(findings, 'low', 'X-Powered-By exposes stack', powered);
+    const server = probe.security.headers && probe.security.headers.server;
+    if (server) addFinding(findings, 'info', 'Server header', server);
+  } else if (probe && !probe.ok) {
+    addFinding(findings, 'medium', 'HTTP probe failed', probe.error || 'unknown');
+  }
+
+  if (page && page.ok) {
+    const cookies = page.cookies || parseCookieFlags(page.headers && page.headers['set-cookie'], null);
+    for (const c of cookies) {
+      if (parsed.protocol === 'https:' && !c.secure) {
+        addFinding(findings, 'medium', `Cookie "${c.name}" missing Secure`, 'Can leak on HTTP requests.');
+      }
+      if (!c.httponly) addFinding(findings, 'low', `Cookie "${c.name}" missing HttpOnly`, 'Readable by JavaScript.');
+      if (!c.samesite) addFinding(findings, 'low', `Cookie "${c.name}" missing SameSite`, 'More CSRF-prone.');
+    }
+    if (page.leak_hints && page.leak_hints.length) {
+      addFinding(findings, 'high', 'Verbose error or leak in response body', page.leak_hints.join(', '));
+    }
+  }
+
+  if (cors && cors.ok) {
+    const acao = cors.headers && cors.headers['access-control-allow-origin'];
+    const acac = cors.headers && cors.headers['access-control-allow-credentials'];
+    if (acao === '*') {
+      addFinding(findings, acac === 'true' ? 'high' : 'low', 'CORS Allow-Origin is *', 'Any site can read this response if the browser allows it.');
+    } else if (acao && /evil\.example/i.test(acao)) {
+      addFinding(findings, 'high', 'CORS reflects arbitrary Origin', acao);
+    }
+  }
+
+  if (secTxt && secTxt.ok && secTxt.status === 200 && secTxt.body && /contact:/i.test(secTxt.body)) {
+    addFinding(findings, 'info', 'security.txt present', previewBody(secTxt.body, 300));
+  } else {
+    addFinding(findings, 'info', 'No security.txt', '/.well-known/security.txt missing or empty');
+  }
+
+  if (mail && mail.ok) {
+    for (const n of mail.notes || []) {
+      addFinding(findings, /dmarc|spf/i.test(n) ? 'medium' : 'low', 'Mail DNS', n);
+    }
+  }
+
+  const order = { high: 0, medium: 1, low: 2, info: 3 };
+  findings.sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9));
+
+  return {
+    ok: true,
+    url: href,
+    host,
+    summary: {
+      high: findings.filter(f => f.severity === 'high').length,
+      medium: findings.filter(f => f.severity === 'medium').length,
+      low: findings.filter(f => f.severity === 'low').length,
+      info: findings.filter(f => f.severity === 'info').length,
+    },
+    findings,
+    tls: ssl && ssl.ok
+      ? {
+          authorized: ssl.authorized,
+          protocol: ssl.protocol,
+          valid_to: ssl.valid_to,
+          days_until_expiry: ssl.days_until_expiry,
+          issuer: ssl.issuer,
+        }
+      : ssl,
+    http: probe && probe.ok ? { status: probe.status, final_url: probe.final_url, elapsed_ms: probe.elapsed_ms } : probe,
+  };
+}
+
 async function executeNetworkTool(name, args) {
   switch (name) {
     case 'dns_lookup':
@@ -823,6 +1425,12 @@ async function executeNetworkTool(name, args) {
       return emailDns(args || {});
     case 'cidr_info':
       return cidrInfo(args || {});
+    case 'security_audit':
+      return securityAudit(args || {});
+    case 'http_request':
+      return httpRequest(args || {});
+    case 'api_probe':
+      return apiProbe(args || {});
     default:
       return null;
   }
