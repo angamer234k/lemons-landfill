@@ -1,6 +1,7 @@
 const net = require('net');
 const dns = require('dns').promises;
 const { getWeather } = require('../utils/weather');
+const { networkToolDefs, executeNetworkTool, assertPublicHost } = require('./networkTools');
 
 const reminders = new Map();
 
@@ -93,6 +94,7 @@ const extraToolDefs = [
       },
     },
   },
+  ...networkToolDefs,
 ];
 
 const UA = 'Mozilla/5.0 (compatible; lemonAI-bot/1.1; +https://github.com/angamer234k/lemons-landfill)';
@@ -190,6 +192,22 @@ async function fetchUrl(args) {
   let url = String(args.url || '').trim();
   if (!url) return { ok: false, error: 'url is required' };
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: 'Invalid URL' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: 'Only http and https URLs are allowed' };
+  }
+  try {
+    await assertPublicHost(parsed.hostname);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  url = parsed.href;
 
   const method = String(args.method || 'GET').toUpperCase();
   if (!['GET', 'HEAD', 'POST'].includes(method)) {
@@ -291,6 +309,12 @@ function tcpConnect(host, port, timeoutMs) {
 async function pingHost(args) {
   const { host, port } = normalizeHostPort(args.host, args.port);
   if (!host) return { ok: false, error: 'host is required' };
+
+  try {
+    await assertPublicHost(host);
+  } catch (err) {
+    return { ok: false, error: err.message, host };
+  }
 
   const started = Date.now();
   let addresses = [];
@@ -473,6 +497,9 @@ async function searchWeb(query) {
 
 async function executeExtraTool(name, args, context) {
   const { user, client } = context;
+
+  const netResult = await executeNetworkTool(name, args, context);
+  if (netResult !== null) return netResult;
 
   if (name === 'get_weather') {
     const city = String(args.city || '').trim();

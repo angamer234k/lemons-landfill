@@ -36,65 +36,27 @@ function formatHistoryDescription(history, opts = {}) {
   return description;
 }
 
-/** Live progress log so tool steps / partial text append instead of wiping each other. */
+/** Live progress: spinner only. Thinking / tool names stay hidden. */
 function createProgress() {
   return {
     startedAt: Date.now(),
     thinking: true,
-    thinkLines: [],
-    tools: [],
-    interim: [],
   };
 }
 
-function pushUniqueLine(arr, line, max = 6) {
-  const t = String(line || '').replace(/\s+/g, ' ').trim();
-  if (!t) return;
-  if (arr[arr.length - 1] === t) return;
-  arr.push(t);
-  while (arr.length > max) arr.shift();
-}
-
 /**
- * Build the status block shown above the final AI answer.
- * live=true  → expanded thinking + tool steps
- * live=false → collapsed "Thought for X second(s)"
+ * Build the status block shown with the AI answer.
+ * live=true  → generic spinner (no reasoning, no tool names)
+ * live=false → the answer only
  */
 function formatProgressBlock(progress, { live = true, answer = null } = {}) {
-  const lines = [];
-
-  if (live) {
-    lines.push('⏳ Thinking…');
-    for (const t of progress.thinkLines) {
-      for (const part of t.split('\n').slice(0, 4)) {
-        const p = part.trim();
-        if (p) lines.push(`> ${p.slice(0, 180)}`);
-      }
-    }
-    for (const name of progress.tools) {
-      lines.push(`> ⚙️ \`${name}\``);
-    }
-    if (progress.tools.length > 0) {
-      lines.push(`> ⚙️ Used ${progress.tools.length} tool(s)`);
-    }
-    for (const t of progress.interim) {
-      for (const part of t.split('\n').slice(0, 3)) {
-        const p = part.trim();
-        if (p) lines.push(`> ${p.slice(0, 200)}`);
-      }
-    }
-  } else {
-    const secs = Math.max(1, Math.round((Date.now() - progress.startedAt) / 1000));
-    lines.push(`> ⏳ Thought for ${secs} second${secs === 1 ? '' : 's'}`);
-    if (progress.tools.length > 0) {
-      lines.push(`> ⚙️ Used ${progress.tools.length} tool(s)`);
-    }
+  if (!live) {
+    return answer == null ? '' : String(answer);
   }
-
-  let block = lines.join('\n');
+  let block = '⏳ Thinking…';
   if (answer !== null && answer !== undefined) {
     const a = String(answer);
-    block += (block ? '\n\n' : '') + a;
+    if (a) block += '\n\n' + a;
   }
   return block;
 }
@@ -176,19 +138,8 @@ module.exports = {
     };
 
     const statusCallback = async status => {
-      if (status.type === 'thinking') {
+      if (status.type === 'thinking' || status.type === 'tool') {
         progress.thinking = true;
-        await renderProgress({ live: true });
-      } else if (status.type === 'tool') {
-        progress.thinking = true;
-        if (status.name) pushUniqueLine(progress.tools, status.name, 8);
-        await renderProgress({ live: true });
-      } else if (status.type === 'think') {
-        const texts = Array.isArray(status.texts) ? status.texts : [status.text].filter(Boolean);
-        for (const t of texts) pushUniqueLine(progress.thinkLines, t, 5);
-        await renderProgress({ live: true });
-      } else if (status.type === 'partial') {
-        if (status.text) pushUniqueLine(progress.interim, status.text, 4);
         await renderProgress({ live: true });
       }
     };
@@ -394,19 +345,8 @@ module.exports = {
     await renderProgress({ live: true });
 
     const statusCallback = async status => {
-      if (status.type === 'thinking') {
+      if (status.type === 'thinking' || status.type === 'tool') {
         progress.thinking = true;
-        await renderProgress({ live: true });
-      } else if (status.type === 'tool') {
-        progress.thinking = true;
-        if (status.name) pushUniqueLine(progress.tools, status.name, 8);
-        await renderProgress({ live: true });
-      } else if (status.type === 'think') {
-        const texts = Array.isArray(status.texts) ? status.texts : [status.text].filter(Boolean);
-        for (const t of texts) pushUniqueLine(progress.thinkLines, t, 5);
-        await renderProgress({ live: true });
-      } else if (status.type === 'partial') {
-        if (status.text) pushUniqueLine(progress.interim, status.text, 4);
         await renderProgress({ live: true });
       }
     };

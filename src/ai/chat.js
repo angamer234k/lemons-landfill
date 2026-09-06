@@ -11,26 +11,46 @@ const {
 const { getProviderConfig } = require('./models');
 const { getToolsForUser, executeTool } = require('./tools');
 
-/** Pull <think>...</think> blocks out of model text. Returns { thinks, cleaned }. */
+/** Strip hidden reasoning / <think> blocks. Never shown to Discord users. */
 function extractThink(text) {
   if (typeof text !== 'string' || !text) return { thinks: [], cleaned: text || '' };
   const thinks = [];
   let cleaned = text;
-  const re = /<think>([\s\S]*?)<\/think>/gi;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const t = (m[1] || '').trim();
-    if (t) thinks.push(t);
+
+  const closed = [
+    /<think>([\s\S]*?)<\/think>/gi,
+    /<thinking>([\s\S]*?)<\/thinking>/gi,
+    /<reasoning>([\s\S]*?)<\/reasoning>/gi,
+    /<thought>([\s\S]*?)<\/thought>/gi,
+    /◁think▷([\s\S]*?)◁\/think▷/gi,
+  ];
+  for (const re of closed) {
+    cleaned = cleaned.replace(re, (_, inner) => {
+      const t = String(inner || '').trim();
+      if (t) thinks.push(t);
+      return '';
+    });
   }
-  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  // Unclosed tag at end (streaming / truncated)
-  const open = cleaned.match(/<think>([\s\S]*)$/i);
+
+  const open = cleaned.match(/<(?:think|thinking|reasoning|thought)>([\s\S]*)$/i);
   if (open) {
     const t = (open[1] || '').trim();
     if (t) thinks.push(t);
-    cleaned = cleaned.replace(/<think>[\s\S]*$/i, '').trim();
+    cleaned = cleaned.replace(/<(?:think|thinking|reasoning|thought)>[\s\S]*$/i, '');
   }
+
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
   return { thinks, cleaned };
+}
+
+function stripHiddenReasoning(msg) {
+  if (!msg || typeof msg !== 'object') return msg;
+  if (msg.reasoning_content) delete msg.reasoning_content;
+  if (msg.reasoning) delete msg.reasoning;
+  if (typeof msg.content === 'string' && msg.content) {
+    msg.content = extractThink(msg.content).cleaned;
+  }
+  return msg;
 }
 
 async function askAI(user, rawHistory = [], options = {}) {
@@ -60,7 +80,7 @@ async function askAI(user, rawHistory = [], options = {}) {
     .replace(/\{\{username\}\}/g, user.username)
     .replace(/\{\{displayName\}\}/g, user.displayName || user.globalName || user.username);
 
-  systemPrompt += `\n\nYou have access to tools (bot commands). Use them when helpful — before answering, during reasoning, or after gathering info. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls. If the user asks you to use a tool, use them. If they need you to do so in a row / multiple times, do so. Do not end your thinking phase abruptly, finish tool calls, think, then respond.`;
+  systemPrompt += `\n\nYou have access to tools (bot commands), including advanced network diagnostics (DNS, WHOIS/RDAP, TLS certs, IP info, HTTP probe, redirect tracing, uptime, mail DNS). Use them when helpful. Never call a tool named "ai". After using tools, answer the user naturally using the tool results. Max ${MAX_TOOL_CALLS} tool calls. If the user asks you to use a tool, use them — including multiple times in a row. Do not target private/local networks or scan port ranges. Never reveal internal reasoning, chain-of-thought, tool-planning, or <think> tags; reason silently and only write the user-facing reply.`;
 
   const trimmedHistory =
     rawHistory.length > MAX_HISTORY_TO_MODEL ? rawHistory.slice(-MAX_HISTORY_TO_MODEL) : rawHistory;
@@ -78,12 +98,14 @@ async function askAI(user, rawHistory = [], options = {}) {
       return { role: 'tool', tool_call_id: msg.tool_call_id, content: msg.content };
     }
     if (msg.role === 'assistant' && msg.tool_calls) {
-      return { role: 'assistant', content: msg.content || null, tool_calls: msg.tool_calls };
+      const content =
+        typeof msg.content === 'string' ? extractThink(msg.content).cleaned || null : msg.content || null;
+      return { role: 'assistant', content, tool_calls: msg.tool_calls };
     }
+    const raw =
+      typeof msg.content === 'string' ? extractThink(msg.content).cleaned : msg.content;
     const content =
-      typeof msg.content === 'string' && msg.content.length > 1200
-        ? msg.content.slice(0, 1197) + '…'
-        : msg.content;
+      typeof raw === 'string' && raw.length > 1200 ? raw.slice(0, 1197) + '…' : raw;
     return { role: msg.role, content };
   });
 
@@ -133,14 +155,11 @@ async function askAI(user, rawHistory = [], options = {}) {
     const choice = data.choices?.[0];
     if (!choice) return { error: 'Empty response from model' };
 
-    const msg = choice.message;
+    const msg = stripHiddenReasoning(choice.message || {});
     const toolCalls = msg.tool_calls;
 
     if (msg.content && toolCalls?.length && typeof statusCallback === 'function') {
-      const { thinks, cleaned } = extractThink(msg.content);
-      if (thinks.length) {
-        await statusCallback({ type: 'think', texts: thinks }).catch(() => {});
-      }
+      const { cleaned } = extractThink(msg.content);
       if (cleaned) {
         await statusCallback({ type: 'partial', text: cleaned }).catch(() => {});
       }
@@ -152,12 +171,7 @@ async function askAI(user, rawHistory = [], options = {}) {
       const idx = reply.indexOf(marker);
       if (idx !== -1) reply = reply.substring(0, idx).trim();
 
-      // Surface any <think> blocks before streaming/returning the clean reply
-      const extracted = extractThink(reply);
-      if (extracted.thinks.length && typeof statusCallback === 'function') {
-        await statusCallback({ type: 'think', texts: extracted.thinks }).catch(() => {});
-      }
-      reply = extracted.cleaned;
+      reply = extractThink(reply).cleaned;
 
       if (streamCallback && reply.length > STREAM_MIN_LENGTH) {
         try {
@@ -188,9 +202,11 @@ async function askAI(user, rawHistory = [], options = {}) {
                 if (payload === '[DONE]') continue;
                 try {
                   const chunk = JSON.parse(payload);
-                  const delta = chunk.choices?.[0]?.delta?.content;
-                  if (delta) {
-                    full += delta;
+                  const delta = chunk.choices?.[0]?.delta || {};
+                  // Ignore reasoning / thinking deltas — never show them.
+                  const piece = delta.content;
+                  if (piece) {
+                    full += piece;
                     const now = Date.now();
                     const charsSince = full.length - lastLen;
                     if (
@@ -203,10 +219,9 @@ async function askAI(user, rawHistory = [], options = {}) {
                       const m = preview.indexOf(marker);
                       if (m !== -1) preview = preview.substring(0, m).trim();
                       const prevExtracted = extractThink(preview);
-                      if (prevExtracted.thinks.length && typeof statusCallback === 'function') {
-                        await statusCallback({ type: 'think', texts: prevExtracted.thinks }).catch(() => {});
+                      if (prevExtracted.cleaned) {
+                        await streamCallback(prevExtracted.cleaned, false);
                       }
-                      await streamCallback(prevExtracted.cleaned, false);
                     }
                   }
                 } catch {}
@@ -216,9 +231,6 @@ async function askAI(user, rawHistory = [], options = {}) {
             const m = full.indexOf(marker);
             if (m !== -1) full = full.substring(0, m).trim();
             const finalExtracted = extractThink(full);
-            if (finalExtracted.thinks.length && typeof statusCallback === 'function') {
-              await statusCallback({ type: 'think', texts: finalExtracted.thinks }).catch(() => {});
-            }
             await streamCallback(finalExtracted.cleaned, true);
             return { success: true, reply: finalExtracted.cleaned, model: usedModel };
           }
@@ -235,15 +247,12 @@ async function askAI(user, rawHistory = [], options = {}) {
     }
     if (toolCalls.length === 0) {
       const fallback = extractThink(msg.content || '(no response)');
-      if (fallback.thinks.length && typeof statusCallback === 'function') {
-        await statusCallback({ type: 'think', texts: fallback.thinks }).catch(() => {});
-      }
       return { success: true, reply: fallback.cleaned || '(no response)', model: usedModel };
     }
 
     messages.push({
       role: 'assistant',
-      content: msg.content || null,
+      content: extractThink(msg.content || '').cleaned || null,
       tool_calls: toolCalls,
     });
 
