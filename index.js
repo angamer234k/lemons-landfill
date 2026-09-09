@@ -8,6 +8,7 @@ const {
   Collection,
   REST,
   Routes,
+  ChannelType,
 } = require('discord.js');
 
 const { CHECK_INTERVAL_MS, OWNER_ID } = require('./src/config');
@@ -16,6 +17,7 @@ const { updateStatusEmbed, checkPresence } = require('./src/roblox');
 const { fetchTextModels } = require('./src/ai');
 const { initReminders } = require('./src/reminders');
 const { startHttpServer, getWallReactionMap, callWallMod } = require('./src/httpServer');
+const { callSiteWallMod } = require('./src/siteWall');
 const customCommands = require('./src/customCommands');
 const botPresence = require('./src/botPresence');
 const { ADMIN_CHANNEL_ID, sendAdminPanel, handleAdminButton, handleAdminSelect, handleAdminModal } = require('./src/adminPanel');
@@ -193,6 +195,58 @@ client.on('messageReactionAdd', async (reaction, user) => {
     }
   } catch (err) {
     console.error('messageReactionAdd error:', err);
+  }
+});
+
+// Reply in Discord DM to a site message → show on wall
+client.on('messageCreate', async (msg) => {
+  try {
+    if (msg.author.bot) return;
+    if (msg.author.id !== OWNER_ID) return;
+    if (!msg.reference?.messageId) return;
+
+    // DMs only
+    const isDm =
+      msg.channel.type === ChannelType.DM ||
+      msg.channel.type === 1 ||
+      msg.channel.isDMBased?.();
+    if (!isDm) return;
+
+    const map = getWallReactionMap();
+    let entry = map.get(msg.reference.messageId);
+
+    // Fallback: pull id from referenced embed footer (id:xxx) if map was lost after restart
+    if (!entry) {
+      try {
+        const ref = await msg.channel.messages.fetch(msg.reference.messageId);
+        const footer = ref.embeds?.[0]?.footer?.text || '';
+        const m = footer.match(/id:([a-z0-9-]+)/i);
+        if (m) {
+          entry = { wallId: m[1], status: 'unknown', public: true };
+          map.set(ref.id, entry);
+        }
+      } catch {
+        return;
+      }
+    }
+    if (!entry?.wallId) return;
+
+    const text = (msg.content || '').trim();
+    if (!text) {
+      await msg.reply('empty reply ignored').catch(() => {});
+      return;
+    }
+
+    try {
+      await callSiteWallMod({ action: 'reply', id: entry.wallId, text: text.slice(0, 1000) });
+      await msg.react('🍋').catch(() => {});
+      await msg.reply('posted to wall under that message 🍋').catch(() => {});
+    } catch (err) {
+      console.error('wall reply failed:', err.message);
+      await msg.reply(`could not post reply: ${err.message}`).catch(() => {});
+    }
+  } catch (err) {
+    console.error('messageCreate wall-reply error:', err);
   }
 });
 
