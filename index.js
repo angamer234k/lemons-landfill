@@ -1,14 +1,21 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Collection,
+  REST,
+  Routes,
+} = require('discord.js');
 
-const { CHECK_INTERVAL_MS } = require('./src/config');
+const { CHECK_INTERVAL_MS, OWNER_ID } = require('./src/config');
 const { loadMemories } = require('./src/memory');
 const { updateStatusEmbed, checkPresence } = require('./src/roblox');
 const { fetchTextModels } = require('./src/ai');
 const { initReminders } = require('./src/reminders');
-const { startHttpServer } = require('./src/httpServer');
+const { startHttpServer, getWallReactionMap, callWallMod } = require('./src/httpServer');
 const customCommands = require('./src/customCommands');
 const botPresence = require('./src/botPresence');
 const { ADMIN_CHANNEL_ID, sendAdminPanel, handleAdminButton, handleAdminSelect, handleAdminModal } = require('./src/adminPanel');
@@ -19,7 +26,11 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.DirectMessageReactions,
+    GatewayIntentBits.GuildMessageReactions,
   ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 const commands = new Collection();
@@ -35,7 +46,6 @@ const ctx = {
   botPresence,
 };
 
-// ---------- LOAD COMMANDS ----------
 const commandsPath = path.join(__dirname, 'src', 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
 
@@ -56,7 +66,6 @@ async function registerCommands() {
   const builtIn = [...commands.values()].map(c => c.data.toJSON());
   const custom = customCommands.getCustomSlashJSON();
 
-  // Prefer built-in names if collision
   const builtInNames = new Set(builtIn.map(c => c.name));
   const customFiltered = custom.filter(c => !builtInNames.has(c.name));
   const body = [...builtIn, ...customFiltered];
@@ -70,7 +79,6 @@ async function registerCommands() {
   }
 }
 
-// ---------- INTERACTIONS ----------
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) {
@@ -100,7 +108,6 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      // Custom command fallback
       const custom = customCommands.getCommandByName(name, guildId);
       if (custom) {
         await customCommands.executeCustom(interaction, custom);
@@ -112,7 +119,6 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.isButton()) {
-      // Admin panel buttons
       if (interaction.customId?.startsWith('admin:')) {
         const handled = await handleAdminButton(interaction, ctx);
         if (handled) return;
@@ -153,7 +159,43 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// ---------- STARTUP ----------
+// Wall mod via reactions on site DMs
+client.on('messageReactionAdd', async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    if (user.id !== OWNER_ID) return;
+
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch {
+        return;
+      }
+    }
+
+    const map = getWallReactionMap();
+    const entry = map.get(reaction.message.id);
+    if (!entry || entry.status !== 'pending') return;
+
+    const emoji = reaction.emoji.name;
+    if (emoji !== '✅' && emoji !== '❌') return;
+
+    const action = emoji === '✅' ? 'approve' : 'reject';
+    try {
+      await callWallMod(action, entry.wallId);
+      entry.status = action === 'approve' ? 'live' : 'rejected';
+      map.set(reaction.message.id, entry);
+      const note = action === 'approve' ? '🟢 wall approved' : '🚫 wall rejected';
+      await reaction.message.reply({ content: note }).catch(() => {});
+    } catch (err) {
+      console.error('wall mod via reaction failed:', err.message);
+      await reaction.message.reply({ content: `mod failed: ${err.message}` }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('messageReactionAdd error:', err);
+  }
+});
+
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   loadMemories();
@@ -169,12 +211,10 @@ client.once('clientReady', async () => {
     .then(m => console.log(`Cached ${m.length} text models.`))
     .catch(() => {});
 
-  // Post / refresh admin panel in configured channel if accessible
   if (ADMIN_CHANNEL_ID && ADMIN_CHANNEL_ID.length >= 16) {
     try {
       const ch = await client.channels.fetch(ADMIN_CHANNEL_ID);
       if (ch && ch.isTextBased()) {
-        // avoid spam: only send if no recent panel from us
         const recent = await ch.messages.fetch({ limit: 15 }).catch(() => null);
         const hasPanel = recent?.some(
           m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('Admin Panel')
@@ -187,7 +227,6 @@ client.once('clientReady', async () => {
   }
 });
 
-// Same port as before — nudge + status API + dashboard + /cc
 startHttpServer(ctx);
 
 client.login(process.env.DISCORD_TOKEN);

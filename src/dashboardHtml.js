@@ -37,6 +37,12 @@ label{display:block;font-size:.8rem;color:var(--muted)}#login{max-width:420px;ma
 <input id="msgProtocol" type="number" min="1" max="9999" step="1"/>
 <button class="primary" id="saveProtocolBtn">Save protocol</button>
 <p class="muted" id="protocolHint">current: —</p></div>
+<div class="card"><h2>Site mood</h2>
+<p class="muted">Shown on /status (and profile later). Empty text = hidden.</p>
+<label>Emoji</label><input id="moodEmoji" maxlength="16" placeholder="🍋"/>
+<label>Text</label><input id="moodText" maxlength="80" placeholder="coding / afk / in roblox"/>
+<button class="primary" id="saveMoodBtn">Save mood</button>
+<p class="muted" id="moodHint">—</p></div>
 <div class="card"><h2>Bot presence</h2>
 <label>Status</label><select id="presStatus"><option>online</option><option selected>idle</option><option>dnd</option><option>invisible</option></select>
 <label>Type</label><select id="presType"><option value="custom">custom</option><option>playing</option><option>listening</option><option>watching</option><option>competing</option></select>
@@ -68,6 +74,7 @@ s.value=i.ai.provider;$('aiModel').value=i.ai.model;$('aiMaxReplies').value=i.ai
 $('hostDescInput').value=i.host.description||'';
 if(i.presence){$('presStatus').value=i.presence.status||'idle';$('presType').value=i.presence.activityType||'custom';$('presName').value=i.presence.activityName||''}
 const proto=i.messageProtocol!=null?i.messageProtocol:2;$('msgProtocol').value=proto;$('protocolHint').textContent='current: v'+proto+' (live on /health)';
+if(i.mood){$('moodEmoji').value=i.mood.emoji||'🍋';$('moodText').value=i.mood.text||'';$('moodHint').textContent=(i.mood.emoji||'🍋')+' '+(i.mood.text||'(empty)')+(i.mood.updatedAt?' · '+i.mood.updatedAt:'')}
 }
 async function load(){render(await api('/api/info'))}
 async function tryLogin(s){secret=s;await api('/api/info');localStorage.setItem(K,secret);$('login').style.display='none';$('app').style.display='block';await load();setInterval(()=>load().catch(()=>{}),30000)}
@@ -76,6 +83,7 @@ $('logoutBtn').onclick=()=>{localStorage.removeItem(K);location.reload()};
 $('refreshBtn').onclick=async()=>{try{await load();toast('Refreshed')}catch(e){toast(e.message,true)}};
 $('checkHostBtn').onclick=async()=>{try{const r=await api('/api/presence/check',{method:'POST',body:'{}'});toast('Host '+(r.online?'ONLINE':'OFFLINE'));await load()}catch(e){toast(e.message,true)}};
 $('saveProtocolBtn').onclick=async()=>{try{const v=Number($('msgProtocol').value);await api('/api/message-protocol',{method:'POST',body:JSON.stringify({messageProtocol:v})});toast('Protocol set to v'+v);await load()}catch(e){toast(e.message,true)}};
+$('saveMoodBtn').onclick=async()=>{try{await api('/api/mood',{method:'POST',body:JSON.stringify({emoji:$('moodEmoji').value.trim()||'🍋',text:$('moodText').value.trim()})});toast('Mood saved');await load()}catch(e){toast(e.message,true)}};
 $('saveAiBtn').onclick=async()=>{try{await api('/api/config',{method:'POST',body:JSON.stringify({provider:$('aiProvider').value,aiModel:$('aiModel').value.trim(),maxReplies:Number($('aiMaxReplies').value),allowOthersToReply:$('aiAllowOthers').checked})});toast('AI saved');await load()}catch(e){toast(e.message,true)}};
 $('saveHostDescBtn').onclick=async()=>{try{await api('/api/host/description',{method:'POST',body:JSON.stringify({description:$('hostDescInput').value})});toast('Updated');await load()}catch(e){toast(e.message,true)}};
 $('savePresBtn').onclick=async()=>{try{await api('/api/presence',{method:'POST',body:JSON.stringify({status:$('presStatus').value,activityType:$('presType').value,activityName:$('presName').value})});toast('Presence saved');await load()}catch(e){toast(e.message,true)}};

@@ -19,6 +19,24 @@ const { AttachmentBuilder } = require('discord.js');
 /** Default protocol; editable at runtime from the dashboard (also exposed on /health). */
 let messageProtocol = 2;
 
+/** Public status mood shown on the site. */
+let siteMood = {
+  text: '',
+  emoji: '🍋',
+  updatedAt: null,
+};
+
+/** discord message id → wall id for reaction moderation */
+const wallReactionMap = new Map();
+
+function getSiteMood() {
+  return siteMood;
+}
+
+function getWallReactionMap() {
+  return wallReactionMap;
+}
+
 function json(res, status, data) {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
@@ -43,7 +61,6 @@ function readBody(req) {
     let body = '';
     req.on('data', chunk => {
       body += chunk;
-      // allow larger bodies for base64 images (~3MB)
       if (body.length > 4e6) {
         reject(new Error('Body too large'));
         req.destroy();
@@ -81,6 +98,7 @@ function buildInfo(ctx) {
   return {
     ok: true,
     messageProtocol,
+    mood: siteMood,
     bot: {
       tag: client.user?.tag || null,
       id: client.user?.id || null,
@@ -156,12 +174,28 @@ function parseDataUrl(dataUrl) {
   if (match) {
     return { mime: match[1], buffer: Buffer.from(match[2], 'base64') };
   }
-  // plain base64 fallback
   try {
     return { mime: 'image/png', buffer: Buffer.from(dataUrl, 'base64') };
   } catch {
     return null;
   }
+}
+
+async function callWallMod(action, id) {
+  const modSecret = process.env.ONLINE_SECRET || process.env.WALL_MOD_SECRET;
+  const siteBase = (process.env.SITE_URL || 'https://xn--e1aleee.space').replace(/\/$/, '');
+  if (!modSecret) {
+    throw new Error('ONLINE_SECRET / WALL_MOD_SECRET not set on bot');
+  }
+  const r = await fetch(`${siteBase}/api/wall-mod`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: modSecret, action, id }),
+    signal: AbortSignal.timeout(10000),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `wall-mod ${r.status}`);
+  return data;
 }
 
 function startHttpServer(ctx) {
@@ -199,6 +233,7 @@ function startHttpServer(ctx) {
           hostOnline: roblox.currentIsOnline,
           uptimeMs: Date.now() - ctx.startTime,
           messageProtocol,
+          mood: siteMood,
         });
         return;
       }
@@ -240,6 +275,29 @@ function startHttpServer(ctx) {
         }
         messageProtocol = next;
         json(res, 200, { ok: true, messageProtocol });
+        return;
+      }
+
+      if (req.method === 'POST' && pathName === '/api/mood') {
+        if (!requireSecret(req, url, res)) return;
+        let data = {};
+        try {
+          data = JSON.parse((await readBody(req)) || '{}');
+        } catch {
+          json(res, 400, { ok: false, error: 'invalid json' });
+          return;
+        }
+        const textMood = typeof data.text === 'string' ? data.text.trim().slice(0, 80) : siteMood.text;
+        const emoji =
+          typeof data.emoji === 'string' && data.emoji.trim()
+            ? data.emoji.trim().slice(0, 16)
+            : siteMood.emoji || '🍋';
+        siteMood = {
+          text: textMood,
+          emoji,
+          updatedAt: new Date().toISOString(),
+        };
+        json(res, 200, { ok: true, mood: siteMood });
         return;
       }
 
@@ -352,14 +410,26 @@ function startHttpServer(ctx) {
         const time = new Date(data.timestamp || Date.now()).toLocaleString('en-GB', {
           timeZone: 'Europe/Moscow',
         });
+        const wallStatus = data.wallStatus || null;
+        const wallId = data.id || null;
 
         const user = await client.users.fetch(OWNER_ID);
 
+        let wallLine = '';
+        if (wallStatus === 'pending') {
+          wallLine = '\n\n⏳ **Wall:** pending — react ✅ approve / ❌ reject';
+        } else if (wallStatus === 'live') {
+          wallLine = '\n\n🟢 **Wall:** live';
+        } else if (data.public) {
+          wallLine = '\n\nWall: requested';
+        }
+
         const embed = {
           title: '🍋 New message from the site',
-          description: `**From:** ${name}\n**Time (MSK):** ${time}\n\n${message}`,
-          color: 0xfdff94,
+          description: `**From:** ${name}\n**Time (MSK):** ${time}${data.invited ? '\n**Invite:** yes' : ''}${wallLine}\n\n${message}`,
+          color: wallStatus === 'pending' ? 0xfbbf24 : 0xfdff94,
           timestamp: new Date().toISOString(),
+          footer: wallId ? { text: `id:${wallId}` } : undefined,
         };
 
         const files = [];
@@ -368,17 +438,25 @@ function startHttpServer(ctx) {
           if (parsed && parsed.buffer && parsed.buffer.length > 0 && parsed.buffer.length < 8 * 1024 * 1024) {
             const ext = (parsed.mime || '').split('/')[1] || 'png';
             const safeName = (data.imageName || `image.${ext}`).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-            files.push(
-              new AttachmentBuilder(parsed.buffer, { name: safeName })
-            );
+            files.push(new AttachmentBuilder(parsed.buffer, { name: safeName }));
             embed.image = { url: `attachment://${safeName}` };
           }
         }
 
-        await user.send({
+        const sent = await user.send({
           embeds: [embed],
           files: files.length ? files : undefined,
         });
+
+        if (wallStatus === 'pending' && wallId) {
+          wallReactionMap.set(sent.id, { wallId, status: 'pending' });
+          try {
+            await sent.react('✅');
+            await sent.react('❌');
+          } catch (e) {
+            console.warn('Could not add wall mod reactions:', e.message);
+          }
+        }
 
         json(res, 200, { ok: true });
         return;
@@ -495,4 +573,9 @@ function startHttpServer(ctx) {
   return server;
 }
 
-module.exports = { startHttpServer };
+module.exports = {
+  startHttpServer,
+  getSiteMood,
+  getWallReactionMap,
+  callWallMod,
+};
