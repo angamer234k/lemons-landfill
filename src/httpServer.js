@@ -14,6 +14,7 @@ const customCommands = require('./customCommands');
 const botPresence = require('./botPresence');
 const { buildDashboardHtml } = require('./dashboardHtml');
 const { buildCustomCommandHtml } = require('./customCommandHtml');
+const { AttachmentBuilder } = require('discord.js');
 
 function json(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -39,7 +40,8 @@ function readBody(req) {
     let body = '';
     req.on('data', chunk => {
       body += chunk;
-      if (body.length > 1e6) {
+      // allow larger bodies for base64 images (~3MB)
+      if (body.length > 4e6) {
         reject(new Error('Body too large'));
         req.destroy();
       }
@@ -142,6 +144,20 @@ function buildInfo(ctx) {
     })),
     timestamp: new Date().toISOString(),
   };
+}
+
+function parseDataUrl(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string') return null;
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+  if (match) {
+    return { mime: match[1], buffer: Buffer.from(match[2], 'base64') };
+  }
+  // plain base64 fallback
+  try {
+    return { mime: 'image/png', buffer: Buffer.from(dataUrl, 'base64') };
+  } catch {
+    return null;
+  }
 }
 
 function startHttpServer(ctx) {
@@ -314,15 +330,30 @@ function startHttpServer(ctx) {
         });
 
         const user = await client.users.fetch(OWNER_ID);
+
+        const embed = {
+          title: '🍋 New message from the site',
+          description: `**From:** ${name}\n**Time (MSK):** ${time}\n\n${message}`,
+          color: 0xfdff94,
+          timestamp: new Date().toISOString(),
+        };
+
+        const files = [];
+        if (data.image) {
+          const parsed = parseDataUrl(data.image);
+          if (parsed && parsed.buffer && parsed.buffer.length > 0 && parsed.buffer.length < 8 * 1024 * 1024) {
+            const ext = (parsed.mime || '').split('/')[1] || 'png';
+            const safeName = (data.imageName || `image.${ext}`).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+            files.push(
+              new AttachmentBuilder(parsed.buffer, { name: safeName })
+            );
+            embed.image = { url: `attachment://${safeName}` };
+          }
+        }
+
         await user.send({
-          embeds: [
-            {
-              title: '🍋 New message from the site',
-              description: `**From:** ${name}\n**Time (MSK):** ${time}\n\n${message}`,
-              color: 0xfdff94,
-              timestamp: new Date().toISOString(),
-            },
-          ],
+          embeds: [embed],
+          files: files.length ? files : undefined,
         });
 
         json(res, 200, { ok: true });
