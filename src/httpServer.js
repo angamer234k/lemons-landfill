@@ -16,8 +16,8 @@ const { buildDashboardHtml } = require('./dashboardHtml');
 const { buildCustomCommandHtml } = require('./customCommandHtml');
 const { AttachmentBuilder } = require('discord.js');
 
-/** Bump together with site api/sync.js MESSAGE_PROTOCOL when message pipeline changes */
-const MESSAGE_PROTOCOL = 2;
+/** Default protocol; editable at runtime from the dashboard (also exposed on /health). */
+let messageProtocol = 2;
 
 function json(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -80,7 +80,7 @@ function buildInfo(ctx) {
 
   return {
     ok: true,
-    messageProtocol: MESSAGE_PROTOCOL,
+    messageProtocol,
     bot: {
       tag: client.user?.tag || null,
       id: client.user?.id || null,
@@ -198,7 +198,7 @@ function startHttpServer(ctx) {
           ready: !!client.user,
           hostOnline: roblox.currentIsOnline,
           uptimeMs: Date.now() - ctx.startTime,
-          messageProtocol: MESSAGE_PROTOCOL,
+          messageProtocol,
         });
         return;
       }
@@ -221,6 +221,25 @@ function startHttpServer(ctx) {
       if (req.method === 'GET' && pathName === '/api/info') {
         if (!requireSecret(req, url, res)) return;
         json(res, 200, buildInfo(ctx));
+        return;
+      }
+
+      if (req.method === 'POST' && pathName === '/api/message-protocol') {
+        if (!requireSecret(req, url, res)) return;
+        let data = {};
+        try {
+          data = JSON.parse((await readBody(req)) || '{}');
+        } catch {
+          json(res, 400, { ok: false, error: 'invalid json' });
+          return;
+        }
+        const next = Number(data.messageProtocol);
+        if (!Number.isFinite(next) || next < 1 || next > 9999 || Math.floor(next) !== next) {
+          json(res, 400, { ok: false, error: 'messageProtocol must be an integer 1-9999' });
+          return;
+        }
+        messageProtocol = next;
+        json(res, 200, { ok: true, messageProtocol });
         return;
       }
 

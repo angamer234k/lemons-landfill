@@ -31,6 +31,12 @@ label{display:block;font-size:.8rem;color:var(--muted)}#login{max-width:420px;ma
 <button class="primary" id="checkHostBtn">Force presence check</button></div>
 <div class="card"><h2>Bot</h2><p>Uptime <strong id="botUptime">—</strong> · Ping <strong id="botPing">—</strong></p>
 <p>Guilds <strong id="botGuilds">—</strong> · Cmds <strong id="botCmds">—</strong></p><div class="cmds" id="cmdList"></div></div>
+<div class="card"><h2>Message protocol</h2>
+<p class="muted">Matches site <code>api/sync.js</code>. Bump at runtime so minor bot tweaks still look in-sync without a full restart.</p>
+<label>messageProtocol (integer)</label>
+<input id="msgProtocol" type="number" min="1" max="9999" step="1"/>
+<button class="primary" id="saveProtocolBtn">Save protocol</button>
+<p class="muted" id="protocolHint">current: —</p></div>
 <div class="card"><h2>Bot presence</h2>
 <label>Status</label><select id="presStatus"><option>online</option><option selected>idle</option><option>dnd</option><option>invisible</option></select>
 <label>Type</label><select id="presType"><option value="custom">custom</option><option>playing</option><option>listening</option><option>watching</option><option>competing</option></select>
@@ -61,6 +67,7 @@ const s=$('aiProvider');if(!s.options.length)(i.ai.providers||[]).forEach(p=>{co
 s.value=i.ai.provider;$('aiModel').value=i.ai.model;$('aiMaxReplies').value=i.ai.maxReplies;$('aiAllowOthers').checked=!!i.ai.allowOthersToReply;
 $('hostDescInput').value=i.host.description||'';
 if(i.presence){$('presStatus').value=i.presence.status||'idle';$('presType').value=i.presence.activityType||'custom';$('presName').value=i.presence.activityName||''}
+const proto=i.messageProtocol!=null?i.messageProtocol:2;$('msgProtocol').value=proto;$('protocolHint').textContent='current: v'+proto+' (live on /health)';
 }
 async function load(){render(await api('/api/info'))}
 async function tryLogin(s){secret=s;await api('/api/info');localStorage.setItem(K,secret);$('login').style.display='none';$('app').style.display='block';await load();setInterval(()=>load().catch(()=>{}),30000)}
@@ -68,6 +75,7 @@ $('loginBtn').onclick=async()=>{try{await tryLogin($('secretInput').value.trim()
 $('logoutBtn').onclick=()=>{localStorage.removeItem(K);location.reload()};
 $('refreshBtn').onclick=async()=>{try{await load();toast('Refreshed')}catch(e){toast(e.message,true)}};
 $('checkHostBtn').onclick=async()=>{try{const r=await api('/api/presence/check',{method:'POST',body:'{}'});toast('Host '+(r.online?'ONLINE':'OFFLINE'));await load()}catch(e){toast(e.message,true)}};
+$('saveProtocolBtn').onclick=async()=>{try{const v=Number($('msgProtocol').value);await api('/api/message-protocol',{method:'POST',body:JSON.stringify({messageProtocol:v})});toast('Protocol set to v'+v);await load()}catch(e){toast(e.message,true)}};
 $('saveAiBtn').onclick=async()=>{try{await api('/api/config',{method:'POST',body:JSON.stringify({provider:$('aiProvider').value,aiModel:$('aiModel').value.trim(),maxReplies:Number($('aiMaxReplies').value),allowOthersToReply:$('aiAllowOthers').checked})});toast('AI saved');await load()}catch(e){toast(e.message,true)}};
 $('saveHostDescBtn').onclick=async()=>{try{await api('/api/host/description',{method:'POST',body:JSON.stringify({description:$('hostDescInput').value})});toast('Updated');await load()}catch(e){toast(e.message,true)}};
 $('savePresBtn').onclick=async()=>{try{await api('/api/presence',{method:'POST',body:JSON.stringify({status:$('presStatus').value,activityType:$('presType').value,activityName:$('presName').value})});toast('Presence saved');await load()}catch(e){toast(e.message,true)}};
