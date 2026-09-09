@@ -396,7 +396,7 @@ function startHttpServer(ctx) {
         try {
           data = JSON.parse((await readBody(req)) || '{}');
         } catch {
-          json(res, 400, { ok: false, error: e.message });
+          json(res, 400, { ok: false, error: 'invalid json' });
           return;
         }
         try {
