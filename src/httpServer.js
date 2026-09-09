@@ -16,6 +16,9 @@ const { buildDashboardHtml } = require('./dashboardHtml');
 const { buildCustomCommandHtml } = require('./customCommandHtml');
 const { AttachmentBuilder } = require('discord.js');
 
+/** Bump together with site api/sync.js MESSAGE_PROTOCOL when message pipeline changes */
+const MESSAGE_PROTOCOL = 2;
+
 function json(res, status, data) {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
@@ -77,6 +80,7 @@ function buildInfo(ctx) {
 
   return {
     ok: true,
+    messageProtocol: MESSAGE_PROTOCOL,
     bot: {
       tag: client.user?.tag || null,
       id: client.user?.id || null,
@@ -194,6 +198,7 @@ function startHttpServer(ctx) {
           ready: !!client.user,
           hostOnline: roblox.currentIsOnline,
           uptimeMs: Date.now() - ctx.startTime,
+          messageProtocol: MESSAGE_PROTOCOL,
         });
         return;
       }
@@ -391,7 +396,7 @@ function startHttpServer(ctx) {
         try {
           data = JSON.parse((await readBody(req)) || '{}');
         } catch {
-          json(res, 400, { ok: false, error: 'invalid json' });
+          json(res, 400, { ok: false, error: e.message });
           return;
         }
         try {
