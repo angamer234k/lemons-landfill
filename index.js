@@ -62,6 +62,7 @@ for (const file of commandFiles) {
 }
 
 const aiCommand = commands.get('ai');
+const inviteCommand = commands.get('invite');
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -125,6 +126,10 @@ client.on('interactionCreate', async interaction => {
         const handled = await handleAdminButton(interaction, ctx);
         if (handled) return;
       }
+      if (interaction.customId?.startsWith('invite:') && inviteCommand?.handleButton) {
+        const handled = await inviteCommand.handleButton(interaction, ctx);
+        if (handled) return;
+      }
       if (aiCommand?.handleButton) {
         const handled = await aiCommand.handleButton(interaction, ctx);
         if (handled) return;
@@ -135,6 +140,10 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isModalSubmit()) {
       if (interaction.customId?.startsWith('admin:')) {
         const handled = await handleAdminModal(interaction, ctx);
+        if (handled) return;
+      }
+      if (interaction.customId?.startsWith('invite:') && inviteCommand?.handleModal) {
+        const handled = await inviteCommand.handleModal(interaction, ctx);
         if (handled) return;
       }
       if (aiCommand?.handleModal) {
@@ -149,6 +158,10 @@ client.on('interactionCreate', async interaction => {
         const handled = await handleAdminSelect(interaction, ctx);
         if (handled) return;
       }
+      if (interaction.customId?.startsWith('invite:') && inviteCommand?.handleSelect) {
+        const handled = await inviteCommand.handleSelect(interaction, ctx);
+        if (handled) return;
+      }
       return;
     }
   } catch (error) {
@@ -161,7 +174,6 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Wall mod via reactions on site DMs
 client.on('messageReactionAdd', async (reaction, user) => {
   try {
     if (user.bot) return;
@@ -198,14 +210,12 @@ client.on('messageReactionAdd', async (reaction, user) => {
   }
 });
 
-// Reply in Discord DM to a site message → show on wall
 client.on('messageCreate', async (msg) => {
   try {
     if (msg.author.bot) return;
     if (msg.author.id !== OWNER_ID) return;
     if (!msg.reference?.messageId) return;
 
-    // DMs only
     const isDm =
       msg.channel.type === ChannelType.DM ||
       msg.channel.type === 1 ||
@@ -215,7 +225,6 @@ client.on('messageCreate', async (msg) => {
     const map = getWallReactionMap();
     let entry = map.get(msg.reference.messageId);
 
-    // Fallback: pull id from referenced embed footer (id:xxx) if map was lost after restart
     if (!entry) {
       try {
         const ref = await msg.channel.messages.fetch(msg.reference.messageId);
