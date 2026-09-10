@@ -4,7 +4,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -12,7 +11,6 @@ const {
 const { OWNER_ID } = require('../config');
 
 const SITE = (process.env.SITE_URL || 'https://xn--e1aleee.space').replace(/\/$/, '');
-// punycode fallback; лемон.space also works from bot if DNS ok
 const INVITE_API = `${SITE}/api/invite`;
 
 const PRESETS = {
@@ -62,6 +60,14 @@ const FLAG_KEYS = [
   'canPublic',
 ];
 
+const FLAG_LABEL = {
+  noSlowmode: 'no-slow',
+  autoApproveWall: 'auto-wall',
+  wallHighlight: 'highlight',
+  vipLounge: 'vip-lounge',
+  canPublic: 'can-public',
+};
+
 function secret() {
   return process.env.ONLINE_SECRET || process.env.WALL_MOD_SECRET || '';
 }
@@ -89,6 +95,7 @@ function perksLine(p) {
     p.autoApproveWall ? 'auto-wall' : 'mod-wall',
     p.wallHighlight ? 'highlight' : null,
     p.vipLounge ? 'vip' : null,
+    p.canPublic === false ? 'no-public' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -118,33 +125,33 @@ async function api(method, body) {
 
 function inviteEmbed(row) {
   const p = row.perks || {};
+  const flags = FLAG_KEYS.map((k) => `\`${k}\`: **${p[k] ? 'on' : 'off'}**`).join('\n');
   return new EmbedBuilder()
     .setColor(0xfdff94)
     .setTitle(`🎫 invite ${row.label ? `· ${row.label}` : ''}`)
     .setDescription(
       `**token:** \`${row.token}\`\n` +
         `**ttl:** ${formatTtl(row.ttl)}\n` +
-        `**perks:** ${perksLine(p)}\n` +
+        `**summary:** ${perksLine(p)}\n\n` +
+        `**flags**\n${flags}\n\n` +
         `**message:** ${row.link || '—'}\n` +
         (row.vipLink ? `**vip:** ${row.vipLink}` : '')
     )
-    .setFooter({ text: 'use buttons to edit · only you can use these' });
+    .setFooter({ text: 'green = on · grey = off · click to flip' });
 }
 
-function editPanel(token) {
-  const row1 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`invite:toggle:${token}`)
-      .setPlaceholder('toggle a flag…')
-      .addOptions(
-        FLAG_KEYS.map((k) => ({
-          label: k,
-          value: k,
-          description: `flip ${k}`,
-        }))
-      )
+function editPanel(token, perks = {}) {
+  // row of flag toggles (max 5 buttons)
+  const flagRow = new ActionRowBuilder().addComponents(
+    FLAG_KEYS.map((k) =>
+      new ButtonBuilder()
+        .setCustomId(`invite:flag:${k}:${token}`)
+        .setLabel(FLAG_LABEL[k] || k)
+        .setStyle(perks[k] ? ButtonStyle.Success : ButtonStyle.Secondary)
+    )
   );
-  const row2 = new ActionRowBuilder().addComponents(
+
+  const tools = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`invite:limits:${token}`)
       .setLabel('limits')
@@ -152,21 +159,22 @@ function editPanel(token) {
     new ButtonBuilder()
       .setCustomId(`invite:label:${token}`)
       .setLabel('label')
-      .setStyle(ButtonStyle.Secondary),
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(`invite:expiry:${token}`)
       .setLabel('expiry')
-      .setStyle(ButtonStyle.Secondary),
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(`invite:refresh:${token}`)
       .setLabel('refresh')
-      .setStyle(ButtonStyle.Success),
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`invite:revoke:${token}`)
       .setLabel('revoke')
       .setStyle(ButtonStyle.Danger)
   );
-  return [row1, row2];
+
+  return [flagRow, tools];
 }
 
 async function fetchOne(token) {
@@ -177,10 +185,7 @@ async function fetchOne(token) {
 }
 
 function ownerOnly(interaction) {
-  if (interaction.user.id !== OWNER_ID) {
-    return false;
-  }
-  return true;
+  return interaction.user.id === OWNER_ID;
 }
 
 module.exports = {
@@ -269,10 +274,7 @@ module.exports = {
 
   async execute(interaction) {
     if (!ownerOnly(interaction)) {
-      return interaction.reply({
-        content: '❌ owner only.',
-        ephemeral: true,
-      });
+      return interaction.reply({ content: '❌ owner only.', ephemeral: true });
     }
     if (!secret()) {
       return interaction.reply({
@@ -308,7 +310,7 @@ module.exports = {
               vipLink: data.vipLink,
             }),
           ],
-          components: editPanel(data.token),
+          components: editPanel(data.token, data.perks),
         });
         return;
       }
@@ -338,7 +340,7 @@ module.exports = {
         const row = await fetchOne(token);
         await interaction.editReply({
           embeds: [inviteEmbed(row)],
-          components: editPanel(token),
+          components: editPanel(token, row.perks),
         });
         return;
       }
@@ -360,18 +362,39 @@ module.exports = {
       return true;
     }
 
-    const parts = interaction.customId.split(':');
-    // invite:action:token (token may contain colons? uuid has none with our format - has hyphens)
-    const action = parts[1];
-    const token = parts.slice(2).join(':');
+    const id = interaction.customId;
 
     try {
+      // flag toggle: invite:flag:KEY:TOKEN
+      if (id.startsWith('invite:flag:')) {
+        const rest = id.slice('invite:flag:'.length);
+        const colon = rest.indexOf(':');
+        const key = rest.slice(0, colon);
+        const token = rest.slice(colon + 1);
+        if (!FLAG_KEYS.includes(key)) throw new Error('unknown flag');
+
+        await interaction.deferUpdate();
+        const row = await fetchOne(token);
+        const perks = { ...(row.perks || {}) };
+        perks[key] = !perks[key];
+        const updated = await api('PATCH', { token, perks });
+        await interaction.editReply({
+          embeds: [inviteEmbed(updated)],
+          components: editPanel(token, updated.perks),
+        });
+        return true;
+      }
+
+      const parts = id.split(':');
+      const action = parts[1];
+      const token = parts.slice(2).join(':');
+
       if (action === 'refresh') {
         await interaction.deferUpdate();
         const row = await fetchOne(token);
         await interaction.editReply({
           embeds: [inviteEmbed(row)],
-          components: editPanel(token),
+          components: editPanel(token, row.perks),
         });
         return true;
       }
@@ -442,7 +465,7 @@ module.exports = {
             new ActionRowBuilder().addComponents(
               new TextInputBuilder()
                 .setCustomId('expiresIn')
-                .setLabel('Seconds from now (−1 = permanent)')
+                .setLabel('Seconds from now (-1 = permanent)')
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true)
                 .setPlaceholder('86400 or -1')
@@ -461,30 +484,13 @@ module.exports = {
     return true;
   },
 
+  // kept so old select panels don't crash if somehow still open
   async handleSelect(interaction) {
-    if (!interaction.customId?.startsWith('invite:toggle:')) return false;
-    if (!ownerOnly(interaction)) {
-      await interaction.reply({ content: 'owner only', ephemeral: true }).catch(() => {});
-      return true;
-    }
-
-    const token = interaction.customId.slice('invite:toggle:'.length);
-    const key = interaction.values[0];
-
-    try {
-      await interaction.deferUpdate();
-      const row = await fetchOne(token);
-      const perks = { ...(row.perks || {}) };
-      if (!FLAG_KEYS.includes(key)) throw new Error('unknown flag');
-      perks[key] = !perks[key];
-      const updated = await api('PATCH', { token, perks });
-      await interaction.editReply({
-        embeds: [inviteEmbed({ ...updated, ttl: updated.ttl })],
-        components: editPanel(token),
-      });
-    } catch (err) {
-      await interaction.followUp({ content: `❌ ${err.message}`, ephemeral: true }).catch(() => {});
-    }
+    if (!interaction.customId?.startsWith('invite:')) return false;
+    await interaction.reply({
+      content: 'old dropdown — run `/invite edit` again for the new button toggles.',
+      ephemeral: true,
+    }).catch(() => {});
     return true;
   },
 
@@ -495,7 +501,6 @@ module.exports = {
       return true;
     }
 
-    // invite:modal-limits:token
     const rest = interaction.customId.slice('invite:modal-'.length);
     const colon = rest.indexOf(':');
     const kind = rest.slice(0, colon);
@@ -513,7 +518,7 @@ module.exports = {
         });
         await interaction.editReply({
           embeds: [inviteEmbed(updated)],
-          components: editPanel(token),
+          components: editPanel(token, updated.perks),
         });
         return true;
       }
@@ -523,7 +528,7 @@ module.exports = {
         const updated = await api('PATCH', { token, label });
         await interaction.editReply({
           embeds: [inviteEmbed(updated)],
-          components: editPanel(token),
+          components: editPanel(token, updated.perks),
         });
         return true;
       }
@@ -533,7 +538,7 @@ module.exports = {
         const updated = await api('PATCH', { token, expiresIn });
         await interaction.editReply({
           embeds: [inviteEmbed(updated)],
-          components: editPanel(token),
+          components: editPanel(token, updated.perks),
         });
         return true;
       }
