@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, ChannelType } from "discord.js";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -24,7 +24,8 @@ if (!DISCORD_TOKEN) {
   process.exit(1);
 }
 
-// ---------- Discord client ----------
+const siteBase = SITE_URL.replace(/\/$/, "");
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -34,7 +35,6 @@ const client = new Client({
   ],
 });
 
-// ---------- Simple reminder store (separate from main bot) ----------
 /** @type {Map<string, any>} */
 const reminders = new Map();
 
@@ -128,12 +128,12 @@ function addReminder({ userId, channelId, message, durationMs }) {
   return reminder;
 }
 
-// ---------- Wall mod helper ----------
-async function callWallMod({ action, id, text }) {
+async function callWallMod({ action, id, text } = {}) {
   if (!ONLINE_SECRET) throw new Error("ONLINE_SECRET not set in .env");
-  const body = { password: ONLINE_SECRET, action, id };
+  const body = { password: ONLINE_SECRET, action };
+  if (id != null) body.id = id;
   if (text != null) body.text = text;
-  const r = await fetch(`${SITE_URL.replace(/\/$/, "")}/api/wall-mod`, {
+  const r = await fetch(`${siteBase}/api/wall-mod`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -144,7 +144,13 @@ async function callWallMod({ action, id, text }) {
   return data;
 }
 
-// ---------- Roblox presence ----------
+async function fetchLiveWall() {
+  const r = await fetch(`${siteBase}/api/wall`, { signal: AbortSignal.timeout(10000) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `wall ${r.status}`);
+  return data;
+}
+
 const ROBLOX_USER_ID = 10855335836;
 const ROBLOX_GAME_ID = 16855862021;
 
@@ -169,10 +175,16 @@ async function checkRobloxPresence() {
   };
 }
 
-// ---------- MCP Server ----------
+function ok(text) {
+  return { content: [{ type: "text", text }] };
+}
+function fail(e) {
+  return { content: [{ type: "text", text: `❌ ${e?.message || e}` }] };
+}
+
 const server = new McpServer({
   name: "lemons-landfill-mcp",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 // ===== REMINDERS =====
@@ -186,33 +198,20 @@ server.tool(
   async ({ duration, message }) => {
     try {
       const ms = parseDuration(duration);
-      if (!ms) return { content: [{ type: "text", text: "❌ Invalid duration. Use e.g. 10m, 2h, 1d" }] };
+      if (!ms) return ok("❌ Invalid duration. Use e.g. 10m, 2h, 1d");
       const r = addReminder({ userId: OWNER_ID, channelId: null, message, durationMs: ms });
-      return {
-        content: [{
-          type: "text",
-          text: `✅ Reminder set!\nID: ${r.id}\nIn: ${formatDuration(ms)}\nMessage: ${r.message}`,
-        }],
-      };
+      return ok(`✅ Reminder set!\nID: ${r.id}\nIn: ${formatDuration(ms)}\nMessage: ${r.message}`);
     } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
+      return fail(e);
     }
   }
 );
 
-server.tool(
-  "list_reminders",
-  "List all pending reminders",
-  {},
-  async () => {
-    const list = [...reminders.values()].sort((a, b) => a.dueAt - b.dueAt);
-    if (!list.length) return { content: [{ type: "text", text: "No pending reminders 🍋" }] };
-    const text = list
-      .map((r) => `• ${r.id} — in ${formatDuration(r.dueAt - Date.now())}: ${r.message}`)
-      .join("\n");
-    return { content: [{ type: "text", text }] };
-  }
-);
+server.tool("list_reminders", "List all pending reminders", {}, async () => {
+  const list = [...reminders.values()].sort((a, b) => a.dueAt - b.dueAt);
+  if (!list.length) return ok("No pending reminders 🍋");
+  return ok(list.map((r) => `• ${r.id} — in ${formatDuration(r.dueAt - Date.now())}: ${r.message}`).join("\n"));
+});
 
 server.tool(
   "cancel_reminder",
@@ -220,39 +219,111 @@ server.tool(
   { id: z.string().describe("Reminder ID from list_reminders") },
   async ({ id }) => {
     const r = reminders.get(id);
-    if (!r) return { content: [{ type: "text", text: "❌ Reminder not found" }] };
+    if (!r) return ok("❌ Reminder not found");
     if (r.timeout) clearTimeout(r.timeout);
     reminders.delete(id);
     saveReminders();
-    return { content: [{ type: "text", text: `✅ Cancelled reminder ${id}` }] };
+    return ok(`✅ Cancelled reminder ${id}`);
   }
 );
 
-// ===== WALL MODERATION =====
+// ===== WALL =====
+server.tool(
+  "wall_list",
+  "List wall posts. status=live (public), pending (needs mod password), or all. Use this before approve/reject.",
+  {
+    status: z.enum(["live", "pending", "all"]).optional().describe("Filter: live, pending, or all. Default all"),
+  },
+  async ({ status }) => {
+    try {
+      const mode = status || "all";
+      const lines = [];
+
+      if (mode === "live" || mode === "all") {
+        const live = await fetchLiveWall();
+        const msgs = live.messages || [];
+        lines.push(`🟢 LIVE (${msgs.length})`);
+        if (!msgs.length) lines.push("  (none)");
+        for (const m of msgs.slice(0, 30)) {
+          const when = m.timestamp ? new Date(m.timestamp).toISOString() : "?";
+          const reply = m.reply?.text ? ` | reply: ${String(m.reply.text).slice(0, 80)}` : "";
+          const img = m.hasImage ? " [img]" : "";
+          lines.push(`  • ${m.id} — ${m.name || "anon"}: ${String(m.message || "").slice(0, 120)}${img}${reply} (${when})`);
+        }
+      }
+
+      if (mode === "pending" || mode === "all") {
+        if (!ONLINE_SECRET) {
+          lines.push("⏳ PENDING: ONLINE_SECRET not set — cannot list pending");
+        } else {
+          let pendingData = null;
+          let lastErr = null;
+          for (const action of ["list", "pending", "get"]) {
+            try {
+              pendingData = await callWallMod({ action });
+              break;
+            } catch (e) {
+              lastErr = e;
+            }
+          }
+          if (!pendingData) {
+            lines.push(`⏳ PENDING: could not fetch (${lastErr?.message || "unknown"})`);
+          } else {
+            const arr =
+              pendingData.pending ||
+              pendingData.messages ||
+              pendingData.items ||
+              (Array.isArray(pendingData) ? pendingData : null);
+            if (Array.isArray(arr)) {
+              const onlyPending = arr.filter((m) => !m.status || m.status === "pending" || m.wallStatus === "pending");
+              const show = mode === "pending" ? (onlyPending.length ? onlyPending : arr) : onlyPending;
+              lines.push(`⏳ PENDING (${show.length})`);
+              if (!show.length) lines.push("  (none)");
+              for (const m of show.slice(0, 30)) {
+                const id = m.id || m.wallId || "?";
+                const name = m.name || m.from || "anon";
+                const msg = String(m.message || m.text || "").slice(0, 120);
+                lines.push(`  • ${id} — ${name}: ${msg}`);
+              }
+            } else {
+              lines.push("⏳ PENDING raw response:");
+              lines.push(JSON.stringify(pendingData, null, 2).slice(0, 1500));
+            }
+          }
+        }
+      }
+
+      return ok(lines.join("\n"));
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
 server.tool(
   "wall_approve",
-  "Approve a pending wall post by its wall ID",
+  "Approve a pending wall post by its wall ID (from wall_list)",
   { wallId: z.string().describe("The wall post ID") },
   async ({ wallId }) => {
     try {
       await callWallMod({ action: "approve", id: wallId });
-      return { content: [{ type: "text", text: `🟢 Wall ${wallId} approved` }] };
+      return ok(`🟢 Wall ${wallId} approved`);
     } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
+      return fail(e);
     }
   }
 );
 
 server.tool(
   "wall_reject",
-  "Reject a pending wall post by its wall ID",
+  "Reject a pending wall post by its wall ID (from wall_list)",
   { wallId: z.string().describe("The wall post ID") },
   async ({ wallId }) => {
     try {
       await callWallMod({ action: "reject", id: wallId });
-      return { content: [{ type: "text", text: `🚫 Wall ${wallId} rejected` }] };
+      return ok(`🚫 Wall ${wallId} rejected`);
     } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
+      return fail(e);
     }
   }
 );
@@ -267,36 +338,28 @@ server.tool(
   async ({ wallId, text }) => {
     try {
       await callWallMod({ action: "reply", id: wallId, text: text.slice(0, 1000) });
-      return { content: [{ type: "text", text: `🍋 Reply posted on wall ${wallId}` }] };
+      return ok(`🍋 Reply posted on wall ${wallId}`);
     } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
+      return fail(e);
     }
   }
 );
 
-// ===== ROBLOX PRESENCE =====
-server.tool(
-  "roblox_status",
-  "Check if the host is currently online in the Roblox game",
-  {},
-  async () => {
-    try {
-      const p = await checkRobloxPresence();
-      return {
-        content: [{
-          type: "text",
-          text: p.online
-            ? `🟢 ONLINE in the game\nplaceId: ${p.placeId}\nlastLocation: ${p.lastLocation || "n/a"}`
-            : `🔴 OFFLINE\nlastLocation: ${p.lastLocation || "n/a"}`,
-        }],
-      };
-    } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
-    }
+// ===== ROBLOX =====
+server.tool("roblox_status", "Check if the host is currently online in the Roblox game", {}, async () => {
+  try {
+    const p = await checkRobloxPresence();
+    return ok(
+      p.online
+        ? `🟢 ONLINE in the game\nplaceId: ${p.placeId}\nlastLocation: ${p.lastLocation || "n/a"}`
+        : `🔴 OFFLINE\nlastLocation: ${p.lastLocation || "n/a"}`
+    );
+  } catch (e) {
+    return fail(e);
   }
-);
+});
 
-// ===== BASIC UTILS =====
+// ===== DISCORD =====
 server.tool(
   "send_discord_message",
   "Send a message to a Discord channel by ID",
@@ -307,37 +370,94 @@ server.tool(
   async ({ channelId, content }) => {
     try {
       const ch = await client.channels.fetch(channelId);
-      if (!ch?.isTextBased()) return { content: [{ type: "text", text: "❌ Not a text channel" }] };
+      if (!ch?.isTextBased()) return ok("❌ Not a text channel");
       const msg = await ch.send(content.slice(0, 2000));
-      return { content: [{ type: "text", text: `✅ Sent (id: ${msg.id})` }] };
+      return ok(`✅ Sent (id: ${msg.id})`);
     } catch (e) {
-      return { content: [{ type: "text", text: `❌ ${e.message}` }] };
+      return fail(e);
     }
   }
 );
 
 server.tool(
-  "bot_status",
-  "Get basic status of this MCP + Discord connection",
-  {},
-  async () => {
-    const up = Math.floor(process.uptime());
-    return {
-      content: [{
-        type: "text",
-        text: `🍋 MCP online\nDiscord: ${client.user?.tag || "connecting..."}\nUptime: ${formatDuration(up * 1000)}\nPending reminders: ${reminders.size}`,
-      }],
-    };
+  "read_discord_messages",
+  "Read the last N messages from a Discord channel",
+  {
+    channelId: z.string().describe("Channel ID"),
+    limit: z.number().min(1).max(50).optional().describe("How many messages (1-50, default 10)"),
+  },
+  async ({ channelId, limit }) => {
+    try {
+      const ch = await client.channels.fetch(channelId);
+      if (!ch?.isTextBased()) return ok("❌ Not a text channel");
+      const n = limit || 10;
+      const messages = await ch.messages.fetch({ limit: n });
+      const text = [...messages.values()]
+        .reverse()
+        .map((m) => `[${m.author?.tag || m.author?.id}]: ${m.content || "(embed/attachment)"}`)
+        .join("\n");
+      return ok(text || "(no messages)");
+    } catch (e) {
+      return fail(e);
+    }
   }
 );
 
-// ---------- boot ----------
+server.tool(
+  "dm_owner",
+  "Send a direct message to the bot owner",
+  { content: z.string().describe("Message to DM the owner") },
+  async ({ content }) => {
+    try {
+      const user = await client.users.fetch(OWNER_ID);
+      await user.send(content.slice(0, 2000));
+      return ok("✅ DM sent to owner");
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.tool("list_guilds", "List Discord servers the bot is in", {}, async () => {
+  try {
+    const guilds = client.guilds.cache.map((g) => `• ${g.name} (${g.id}) members≈${g.memberCount ?? "?"}`);
+    return ok(guilds.length ? guilds.join("\n") : "No guilds");
+  } catch (e) {
+    return fail(e);
+  }
+});
+
+server.tool(
+  "list_channels",
+  "List text channels in a guild",
+  { guildId: z.string().describe("Guild/server ID") },
+  async ({ guildId }) => {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      await guild.channels.fetch();
+      const channels = guild.channels.cache
+        .filter((c) => c.isTextBased?.() || c.type === ChannelType.GuildText)
+        .map((c) => `• #${c.name} (${c.id})`);
+      return ok(channels.length ? channels.join("\n") : "No text channels");
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.tool("bot_status", "Get basic status of this MCP + Discord connection", {}, async () => {
+  const up = Math.floor(process.uptime());
+  return ok(
+    `🍋 MCP online\nDiscord: ${client.user?.tag || "connecting..."}\nUptime: ${formatDuration(up * 1000)}\nGuilds: ${client.guilds.cache.size}\nPending reminders: ${reminders.size}`
+  );
+});
+
 async function main() {
   loadReminders();
   for (const r of reminders.values()) scheduleReminder(r);
 
   await client.login(DISCORD_TOKEN);
-  console.error(`Discord ready as ${client.user.tag}`); // stderr so stdio stays clean
+  console.error(`Discord ready as ${client.user.tag}`);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
