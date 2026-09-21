@@ -1,6 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const {
   Client,
   GatewayIntentBits,
@@ -47,6 +48,59 @@ const ctx = {
   customCommands,
   botPresence,
 };
+
+// ---------- MCP bridge (Xiaozhi) ----------
+let mcpChild = null;
+
+function startMcpBridge() {
+  const endpoint = process.env.MCP_ENDPOINT;
+  if (!endpoint || !endpoint.startsWith('ws')) {
+    console.log('[mcp] MCP_ENDPOINT not set — skipping Xiaozhi MCP bridge');
+    return;
+  }
+
+  const pipePath = path.join(__dirname, 'mcp', 'pipe.js');
+  if (!fs.existsSync(pipePath)) {
+    console.warn('[mcp] mcp/pipe.js not found — skip');
+    return;
+  }
+
+  console.log('[mcp] starting Xiaozhi MCP bridge...');
+  mcpChild = spawn(process.execPath, [pipePath], {
+    cwd: path.join(__dirname, 'mcp'),
+    env: { ...process.env },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+
+  mcpChild.on('exit', (code, signal) => {
+    console.warn(`[mcp] bridge exited code=${code} signal=${signal}`);
+    mcpChild = null;
+    // soft restart after a bit
+    setTimeout(() => {
+      if (!mcpChild) startMcpBridge();
+    }, 5000);
+  });
+
+  mcpChild.on('error', (err) => {
+    console.error('[mcp] failed to start bridge:', err.message);
+  });
+}
+
+function stopMcpBridge() {
+  if (mcpChild && !mcpChild.killed) {
+    mcpChild.kill('SIGTERM');
+    mcpChild = null;
+  }
+}
+
+process.on('SIGINT', () => {
+  stopMcpBridge();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  stopMcpBridge();
+  process.exit(0);
+});
 
 const commandsPath = path.join(__dirname, 'src', 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
@@ -288,6 +342,9 @@ client.once('clientReady', async () => {
       console.warn('Admin channel not available:', err.message);
     }
   }
+
+  // start Xiaozhi MCP bridge after bot is ready
+  startMcpBridge();
 });
 
 startHttpServer(ctx);

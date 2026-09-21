@@ -13,39 +13,36 @@ Custom MCP server for **lemons-landfill** so Xiaozhi AI can control:
 ```bash
 cd mcp
 cp .env.example .env
-# edit .env and put your real DISCORD_TOKEN + ONLINE_SECRET
+# edit .env — put DISCORD_TOKEN, ONLINE_SECRET, and MCP_ENDPOINT
 npm install
 ```
 
-## Run (stdio – for Xiaozhi / mcp_pipe)
+You can also put `MCP_ENDPOINT` in the **root** `.env` of the bot (index.js reads it).
+
+## Auto-start with the Discord bot
+
+If `MCP_ENDPOINT` is set in the root `.env`, `index.js` will automatically spawn the MCP bridge when the bot starts. No extra commands needed.
+
+## Manual run
 
 ```bash
+# just the MCP server (stdio)
 npm start
+
+# full bridge to Xiaozhi (needs MCP_ENDPOINT)
+npm run pipe
 ```
 
-## Xiaozhi config example
+## Tools
 
-```json
-{
-  "mcpEndpoint": "wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN",
-  "mcpServers": {
-    "lemons-landfill": {
-      "command": "node",
-      "args": ["/absolute/path/to/lemons-landfill/mcp/server.js"],
-      "env": {
-        "DISCORD_TOKEN": "your_token",
-        "ONLINE_SECRET": "your_secret",
-        "OWNER_ID": "1131451961942749206"
-      }
-    }
-  }
-}
-```
-
-Or with xiaozhi-client:
-
-```bash
-xiaozhi config set mcpEndpoint "wss://..."
-# then add the server block above into xiaozhi.config.json
-xiaozhi start
-```
+| Tool | Description |
+|------|-------------|
+| `add_reminder` | Set a reminder (e.g. `10m`, `2h`) |
+| `list_reminders` | List pending reminders |
+| `cancel_reminder` | Cancel by ID |
+| `wall_approve` | Approve wall post |
+| `wall_reject` | Reject wall post |
+| `wall_reply` | Reply on wall post |
+| `roblox_status` | Check host online/offline |
+| `send_discord_message` | Send message to a channel |
+| `bot_status` | MCP + Discord status |
