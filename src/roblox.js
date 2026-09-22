@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const {
   ROBLOX_USER_ID,
   ROBLOX_GAME_ID,
@@ -16,6 +16,8 @@ const MAX_HISTORY_ENTRIES = 864; // ~3 days at 5-min intervals
 const GRAPH_PNG_BASE =
   process.env.ROBLOX_GRAPH_URL ||
   'https://www.xn--e1aleee.space/api/png/roblox?period=3d';
+
+const GRAPH_FILENAME = 'roblox-uptime.png';
 
 let statusMessage = null;
 let statusMessageId = null;
@@ -165,13 +167,34 @@ function graphImageUrl() {
   return `${GRAPH_PNG_BASE}${sep}t=${Date.now()}`;
 }
 
-function buildEmbed(isOnline) {
+/** Discord often refuses IDN / custom-domain setImage URLs — attach the bytes instead. */
+async function fetchGraphPng() {
+  try {
+    const r = await fetch(graphImageUrl(), { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) {
+      console.warn('Graph PNG fetch failed:', r.status);
+      return null;
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    // PNG magic bytes
+    if (buf.length < 100 || buf[0] !== 0x89 || buf[1] !== 0x50) {
+      console.warn('Graph PNG invalid bytes');
+      return null;
+    }
+    return buf;
+  } catch (err) {
+    console.warn('Graph PNG fetch error:', err.message);
+    return null;
+  }
+}
+
+async function buildPayload(isOnline) {
   const color = isOnline ? 0x00ff00 : 0xff0000;
   const title = isOnline ? 'ONLINE' : 'OFFLINE';
   const day = getUptimeStats(24 * 60 * 60 * 1000);
   const pct = day.totalChecks > 0 ? day.uptimePercent.toFixed(1) : '—';
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(title)
     .setDescription(
       `${hostDescription}\n\n` +
@@ -181,9 +204,19 @@ function buildEmbed(isOnline) {
           : '')
     )
     .setColor(color)
-    .setImage(graphImageUrl())
     .setTimestamp()
     .setFooter({ text: 'Last updated · graph = last 3d' });
+
+  const png = await fetchGraphPng();
+  if (png) {
+    const file = new AttachmentBuilder(png, { name: GRAPH_FILENAME });
+    embed.setImage(`attachment://${GRAPH_FILENAME}`);
+    return { embeds: [embed], files: [file] };
+  }
+
+  // fallback: external URL (may not render on Discord for IDN domains)
+  embed.setImage(graphImageUrl());
+  return { embeds: [embed] };
 }
 
 async function resolveChannel(client) {
@@ -215,7 +248,6 @@ async function cleanupOldStatusMessages(channel, client, keepId) {
     for (const msg of fetched.values()) {
       if (msg.author?.id !== me) continue;
       if (keepId && msg.id === keepId) continue;
-      // only touch embeds that look like our status posts
       const title = msg.embeds?.[0]?.title;
       if (title === 'ONLINE' || title === 'OFFLINE') {
         toDelete.push(msg);
@@ -242,8 +274,7 @@ async function updateStatusEmbed(client, isOnline) {
   const channel = await resolveChannel(client);
   if (!channel) return;
 
-  const embed = buildEmbed(isOnline);
-  const payload = { embeds: [embed] };
+  const payload = await buildPayload(isOnline);
 
   // 1) try in-memory message
   if (statusMessage) {
@@ -270,7 +301,6 @@ async function updateStatusEmbed(client, isOnline) {
       await cleanupOldStatusMessages(channel, client, msg.id);
       return;
     } catch (error) {
-      // gone or unreadable
       statusMessage = null;
       saveStatusMessageId(null);
     }
